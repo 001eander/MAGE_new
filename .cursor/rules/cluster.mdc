@@ -1,0 +1,15 @@
+---
+description: How to run this official MAGE clone on the LSF GPU cluster
+alwaysApply: true
+---
+
+# Run on this cluster
+
+- Login nodes (`mgtgpu*`) have no GPU. Train, eval, and CUDA checks go through `bsub`.
+- Do not submit jobs unless the user asks. Writing scripts and checking queues is fine.
+- Official env: `~/miniforge3/envs/mage` (Python 3.8, PyTorch 1.7.1, CUDA 10.2, timm 0.3.2).
+  That stack only runs on **V100** (gpu01–08, gpu11–12). Do not send it to A100 or L20.
+- Call the env interpreter directly: `~/miniforge3/envs/mage/bin/python`.
+- Submit from the repo root: `bsub < scripts/....sh`.
+- Compute nodes may lack `unzip`; use `/usr/bin/unzip` or `python3 -m zipfile`.
+- Follow the `lsf-ops` skill for queue, host select, and script layout.
