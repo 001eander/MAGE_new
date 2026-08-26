@@ -38,6 +38,7 @@ echo "=== pretrain ==="
     --warmup_epochs 0 \
     --num_workers 0 \
     --max_samples 1 \
+    --no_aug \
     --data_path "${SMOKE}" \
     --output_dir "${OUT}" \
     --blr 1.5e-4 \

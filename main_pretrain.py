@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 
+import PIL.Image
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -71,6 +72,8 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--max_samples', default=None, type=int,
                         help='Use only the first N training images (for smoke tests)')
+    parser.add_argument('--no_aug', action='store_true',
+                        help='Deterministic Resize+CenterCrop (for memorization); default is random crop and flip')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -116,11 +119,19 @@ def main(args):
 
     cudnn.benchmark = True
 
-    # simple augmentation
-    transform_train = transforms.Compose([
+    if args.no_aug:
+        transform_train = transforms.Compose([
+            transforms.Resize(args.input_size, interpolation=PIL.Image.BICUBIC),
+            transforms.CenterCrop(args.input_size),
+            transforms.ToTensor(),
+        ])
+        print("Using deterministic Resize+CenterCrop")
+    else:
+        transform_train = transforms.Compose([
             transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0)),
             transforms.RandomHorizontalFlip(),
-            transforms.ToTensor()])
+            transforms.ToTensor(),
+        ])
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     if args.max_samples is not None:
         n = min(int(args.max_samples), len(dataset_train))
