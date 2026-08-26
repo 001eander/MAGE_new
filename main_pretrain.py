@@ -69,6 +69,8 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
                         help='dataset path')
+    parser.add_argument('--max_samples', default=None, type=int,
+                        help='Use only the first N training images (for smoke tests)')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -120,7 +122,16 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor()])
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    if args.max_samples is not None:
+        n = min(int(args.max_samples), len(dataset_train))
+        dataset_train = torch.utils.data.Subset(dataset_train, list(range(n)))
     print(dataset_train)
+    if len(dataset_train) % args.batch_size != 0:
+        raise ValueError(
+            "dataset size ({}) must be divisible by batch_size ({})".format(
+                len(dataset_train), args.batch_size
+            )
+        )
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -143,7 +154,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
-        drop_last=True,
+        drop_last=False,
     )
     
     # define the model

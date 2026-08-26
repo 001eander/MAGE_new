@@ -123,7 +123,7 @@ checkpoint = torch.load(args.ckpt, map_location='cpu')
 model.load_state_dict(checkpoint['model'])
 model.eval()
 
-num_steps = args.num_images // args.batch_size + 1
+num_steps = (args.num_images + args.batch_size - 1) // args.batch_size
 gen_img_list = []
 save_folder = os.path.join(args.output_dir, "temp{}-iter{}".format(args.temp, args.num_iter))
 if not os.path.exists(save_folder):
