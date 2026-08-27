@@ -213,10 +213,12 @@ n=1 做不了半 A 半 B（只有一张图），从 n=2 做到最大的必须做
 
 ### 阶段 0：评测和数据（先做）
 
-- [ ] 写死每个 n 用哪些图（或种子）；n=1,2 的两张同时用于半 A 半 B
-- [ ] 同一个评测脚本：FID、完全/大致覆盖、编号和像素匹配误差、拼图，写入 `outputs/<实验名>/n<N>/metrics.json`
-- [ ] VQGAN 重建 FID 和生成 FID 用同一个脚本
-- [ ] 温度、步数、是否取最大概率、生成张数写入 `metrics.json`；比较不同设置时默认相同
+- [x] 写死每个 n 用哪些图（或种子）；n=1,2 的两张同时用于半 A 半 B
+- [x] 同一个评测脚本：FID、完全/大致覆盖、编号和像素匹配误差、拼图，写入 `outputs/<实验名>/n<N>/metrics.json`
+- [x] VQGAN 重建 FID 和生成 FID 用同一个脚本
+- [x] 温度、步数、是否取最大概率、生成张数写入 `metrics.json`；比较不同设置时默认相同
+
+列表在 `splits/`（`n1.txt`…`n10000.txt`，A/B 见 `manifest.json`）。评测入口是 `eval_exp.py`。FID 与 LGANs-TT `realdata.py` 相同：`pytorch-fid` 的 `calculate_fid_given_paths`（TF Inception 2015-12-05，2048 维），生成 FID 和 VQGAN 重建 FID 都走 `fid_two_folders()`。
 
 
 

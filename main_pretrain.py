@@ -74,6 +74,8 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--max_samples', default=None, type=int,
                         help='Use only the first N training images (for smoke tests)')
+    parser.add_argument('--image_list', default='', type=str,
+                        help='Frozen relative-path list (e.g. splits/n2.txt). Paths are relative to --data_path.')
     parser.add_argument('--no_aug', action='store_true',
                         help='Deterministic Resize+CenterCrop (for memorization); default is random crop and flip')
 
@@ -134,10 +136,17 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
         ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    if args.max_samples is not None:
-        n = min(int(args.max_samples), len(dataset_train))
-        dataset_train = torch.utils.data.Subset(dataset_train, list(range(n)))
+    if args.image_list:
+        from util.exp_data import ImageListDataset, read_list
+        rel_paths = read_list(args.image_list)
+        dataset_train = ImageListDataset(
+            rel_paths, source_root=args.data_path, transform=transform_train)
+        print('Using frozen image list', args.image_list, 'n={}'.format(len(dataset_train)))
+    else:
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        if args.max_samples is not None:
+            n = min(int(args.max_samples), len(dataset_train))
+            dataset_train = torch.utils.data.Subset(dataset_train, list(range(n)))
     print(dataset_train)
     if len(dataset_train) % args.batch_size != 0:
         raise ValueError(

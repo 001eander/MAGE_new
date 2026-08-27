@@ -1,0 +1,64 @@
+{
+  "source": {
+    "dataset": "tiny-imagenet-200",
+    "native_resolution": 64,
+    "train_eval_resolution": 256,
+    "upsample": "Resize(256, BICUBIC)+CenterCrop(256)",
+    "fid_comparable_to_paper": false,
+    "note": "Tiny-ImageNet originals are 64x64 and are upsampled to 256 before train/eval. FID on this set must not be compared to paper ImageNet-256."
+  },
+  "source_root": "data/tiny-imagenet-200",
+  "splits_dir": "splits",
+  "seed": 0,
+  "n_values": [
+    1,
+    2,
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "nested": true,
+  "A": {
+    "id": "A",
+    "path": "train/n01443537/images/n01443537_0.JPEG",
+    "wnid": "n01443537",
+    "name": "goldfish, Carassius auratus",
+    "used_for": [
+      "n=1",
+      "n>=2 prefix",
+      "half A half B image A"
+    ]
+  },
+  "B": {
+    "id": "B",
+    "path": "train/n01629819/images/n01629819_0.JPEG",
+    "wnid": "n01629819",
+    "name": "European fire salamander, Salamandra salamandra",
+    "used_for": [
+      "n=2 second image",
+      "n>=2 prefix",
+      "half A half B image B"
+    ]
+  },
+  "probe": {
+    "path": "probe.txt",
+    "note": "A, B, plus the next 6 of n=10. Large-n oneshot-vs-self uses this set."
+  },
+  "generation_defaults": {
+    "temperature": 6.0,
+    "num_iter": 20,
+    "argmax": false,
+    "num_images": 1000,
+    "seed": 0
+  },
+  "num_images_by_n": {
+    "1": 1000,
+    "2": 1000,
+    "10": 1000,
+    "100": 5000,
+    "1000": 50000,
+    "10000": 50000
+  },
+  "imagenet256": "Not prepared. ImageNet-256 is required only when comparing FID to the paper (especially n=10000 and *50000). Tiny FID is not that comparison."
+}

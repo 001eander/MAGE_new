@@ -1,0 +1,57 @@
+{
+  "n": 2,
+  "exp_name": "phase0_check",
+  "image_list": "splits/n2.txt",
+  "n_train": 2,
+  "train_paths": [
+    "train/n01443537/images/n01443537_0.JPEG",
+    "train/n01629819/images/n01629819_0.JPEG"
+  ],
+  "A": "train/n01443537/images/n01443537_0.JPEG",
+  "B": "train/n01629819/images/n01629819_0.JPEG",
+  "source": {
+    "dataset": "tiny-imagenet-200",
+    "native_resolution": 64,
+    "train_eval_resolution": 256,
+    "upsample": "Resize(256, BICUBIC)+CenterCrop(256)",
+    "fid_comparable_to_paper": false,
+    "note": "Tiny-ImageNet originals are 64x64 and are upsampled to 256 before train/eval. FID on this set must not be compared to paper ImageNet-256."
+  },
+  "generation": {
+    "temperature": 6.0,
+    "num_iter": 20,
+    "argmax": false,
+    "num_images": 1000,
+    "seed": 0,
+    "repeats_allowed": true,
+    "note": "Compare settings with these defaults unless the comparison is about temperature / steps / argmax / count."
+  },
+  "fid": {
+    "generated_vs_ref": 12.3,
+    "vqgan_recon_vs_ref": 8.9,
+    "tokens_exact_equals_vqgan_recon": true,
+    "generated_dir": "outputs/phase0_check/n2/gen",
+    "ref_dir": "data/tiny-imagenet-val256",
+    "recon_dir": "outputs/phase0_check/n2/ref_vqgan_recon",
+    "implementation": "pytorch-fid calculate_fid_given_paths (same as LGANs-TT realdata.py); same function for generated and VQGAN-recon FID"
+  },
+  "coverage": {
+    "exact": 0.0,
+    "approx": 0.0,
+    "approx_token_errors_max": 16,
+    "n_train": 2
+  },
+  "match_error": {
+    "token_frac": 0.5,
+    "pixel_mse_vqgan": 0.1,
+    "n_generated": 1000
+  },
+  "oneshot_vs_self": {
+    "token_acc": 0.0,
+    "probe": [
+      "train/n01443537/images/n01443537_0.JPEG",
+      "train/n01629819/images/n01629819_0.JPEG"
+    ]
+  },
+  "grid": "outputs/phase0_check/n2/grid.png"
+}
