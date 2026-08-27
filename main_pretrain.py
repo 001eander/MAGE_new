@@ -23,7 +23,7 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 import models_mage
 
-from engine_pretrain import train_one_epoch
+from engine_pretrain import train_one_epoch, eval_reproduction_token_acc
 
 
 def get_args_parser():
@@ -68,6 +68,44 @@ def get_args_parser():
                         help='Gradient clip')
     parser.add_argument('--label_smoothing', type=float, default=0.1,
                         help='Token CE label smoothing; set 0 for memorization')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                        help='Transformer / token-embedding dropout; set 0 for memorization')
+    parser.add_argument('--fixed_mask_ratio', type=float, default=None,
+                        help='If set, use this mask ratio every step (1.0 = full-mask, matches generation)')
+    parser.add_argument('--full_mask_prob', type=float, default=0.0,
+                        help='Probability of training on a fully-masked sample (generation start)')
+    parser.add_argument('--gen_schedule_prob', type=float, default=0.0,
+                        help='Probability of using the iterative-generation mask lengths')
+    parser.add_argument('--no_amp', action='store_true',
+                        help='Disable AMP (more stable for exact token memorization)')
+    parser.add_argument('--cache_tokens', action='store_true',
+                        help='Encode VQGAN tokens once (single-image memorization)')
+    parser.add_argument('--repeat', type=int, default=1,
+                        help='Repeat the training set this many times per epoch')
+    parser.add_argument('--eval_num_iter', type=int, default=12,
+                        help='Iterative greedy steps when evaluating generation token acc')
+    parser.add_argument('--save_freq', type=int, default=1,
+                        help='Save checkpoint-last every N epochs (always saved at the last epoch)')
+    parser.add_argument('--save_ckpt_freq', type=int, default=40,
+                        help='Save numbered checkpoint-N every N epochs; 0 disables')
+    parser.add_argument('--stop_token_acc', type=float, default=None,
+                        help='Stop when oneshot and iterative token acc both reach this (e.g. 1.0)')
+    parser.add_argument('--refine_lr', type=float, default=None,
+                        help='After oneshot acc reaches --refine_after, set lr and min_lr to this')
+    parser.add_argument('--refine_after', type=float, default=0.9,
+                        help='Oneshot acc that triggers --refine_lr')
+    parser.add_argument('--phase2_after_oneshot', action='store_true',
+                        help='After oneshot hits --stop_token_acc, switch to gen-schedule training')
+    parser.add_argument('--require_iterative', action='store_true',
+                        help='Also require iterative token acc before early stop')
+    parser.add_argument('--decoder_mask_token', action='store_true',
+                        help='Fill masked decoder slots with mask_token+pos instead of CLS')
+    parser.add_argument('--linear_head', action='store_true',
+                        help='Use a Linear codebook classifier instead of tied MLM embeddings')
+    parser.add_argument('--cond_ids', action='store_true',
+                        help='Use ImageFolder class id as the class token (codebook_size + id)')
+    parser.add_argument('--eval_freq', type=int, default=1,
+                        help='Run full-mask token-acc eval every N epochs when --stop_token_acc is set')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -138,7 +176,11 @@ def main(args):
     if args.max_samples is not None:
         n = min(int(args.max_samples), len(dataset_train))
         dataset_train = torch.utils.data.Subset(dataset_train, list(range(n)))
+    dataset_unique = dataset_train
+    if args.repeat > 1:
+        dataset_train = torch.utils.data.ConcatDataset([dataset_unique] * int(args.repeat))
     print(dataset_train)
+    print("unique images:", len(dataset_unique))
     if len(dataset_train) % args.batch_size != 0:
         raise ValueError(
             "dataset size ({}) must be divisible by batch_size ({})".format(
@@ -169,6 +211,15 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False,
     )
+    eval_bs = min(args.batch_size, max(1, len(dataset_unique)))
+    data_loader_eval = torch.utils.data.DataLoader(
+        dataset_unique,
+        batch_size=eval_bs,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+    )
     
     # define the model
     vqgan_ckpt_path = 'vqgan_jax_strongaug.ckpt'
@@ -176,6 +227,14 @@ def main(args):
     model = models_mage.__dict__[args.model](mask_ratio_mu=args.mask_ratio_mu, mask_ratio_std=args.mask_ratio_std,
                                              mask_ratio_min=args.mask_ratio_min, mask_ratio_max=args.mask_ratio_max,
                                              label_smoothing=args.label_smoothing,
+                                             dropout=args.dropout,
+                                             fixed_mask_ratio=args.fixed_mask_ratio,
+                                             full_mask_prob=args.full_mask_prob,
+                                             gen_schedule_prob=args.gen_schedule_prob,
+                                             gen_num_iter=args.eval_num_iter,
+                                             decoder_mask_token=args.decoder_mask_token,
+                                             linear_head=args.linear_head,
+                                             use_cond_ids=args.cond_ids,
                                              vqgan_ckpt_path=vqgan_ckpt_path)
 
     model.to(device)
@@ -206,6 +265,28 @@ def main(args):
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
+    if args.cache_tokens:
+        print("Caching VQGAN tokens for memorization")
+        model_without_ddp.eval()
+        with torch.no_grad():
+            cache = {}
+            first = None
+            for samples, labels in data_loader_eval:
+                samples = samples.to(device, non_blocking=True)
+                toks = model_without_ddp.vqgan_encode(samples)
+                if first is None:
+                    first = toks
+                for t, lab in zip(toks, labels):
+                    cache[int(lab.item())] = t.detach()
+        if args.cond_ids:
+            model_without_ddp._cached_gt_by_id = cache
+            print("cached ids", sorted(cache.keys()),
+                  "token shape", tuple(next(iter(cache.values())).shape))
+        else:
+            model_without_ddp._cached_gt_indices = first
+            print("cached token shape", tuple(first.shape))
+        model_without_ddp.train()
+
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -217,14 +298,57 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 40 == 0 or epoch + 1 == args.epochs):
+        last_epoch = epoch + 1 == args.epochs
+        stop = False
+        if args.stop_token_acc is not None and ((epoch + 1) % args.eval_freq == 0 or last_epoch):
+            eval_stats = eval_reproduction_token_acc(
+                model, data_loader_eval, device,
+                num_iter=args.eval_num_iter, max_batches=None)
+            print("Eval oneshot token acc: {:.4f} ({}/{})  iterative: {:.4f} ({}/{})".format(
+                eval_stats['oneshot_acc'], eval_stats['oneshot_correct'], eval_stats['n_tokens'],
+                eval_stats['iterative_acc'], eval_stats['iterative_correct'], eval_stats['n_tokens']))
+            train_stats['eval_token_acc'] = eval_stats['oneshot_acc']
+            train_stats['eval_token_correct'] = eval_stats['oneshot_correct']
+            train_stats['eval_token_total'] = eval_stats['n_tokens']
+            train_stats['eval_iterative_acc'] = eval_stats['iterative_acc']
+            train_stats['eval_iterative_correct'] = eval_stats['iterative_correct']
+            oneshot_ok = eval_stats['oneshot_acc'] >= args.stop_token_acc
+            iterative_ok = eval_stats['iterative_acc'] >= args.stop_token_acc
+            if (args.refine_lr is not None
+                    and eval_stats['oneshot_acc'] >= args.refine_after
+                    and abs(args.lr - args.refine_lr) > 1e-12):
+                print("Refine lr: oneshot {:.4f} >= {:.4f}, {} -> {}".format(
+                    eval_stats['oneshot_acc'], args.refine_after, args.lr, args.refine_lr))
+                args.lr = args.refine_lr
+                args.min_lr = args.refine_lr
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.refine_lr
+            if oneshot_ok and (iterative_ok or not args.require_iterative):
+                print("Early stop: oneshot {:.4f} iterative {:.4f} (require_iterative={})".format(
+                    eval_stats['oneshot_acc'], eval_stats['iterative_acc'], args.require_iterative))
+                stop = True
+                last_epoch = True
+            elif (args.phase2_after_oneshot and oneshot_ok and
+                    not getattr(args, '_phase2_started', False)):
+                print("Phase 2: oneshot {:.4f}, switch to gen-schedule masks".format(
+                    eval_stats['oneshot_acc']))
+                args._phase2_started = True
+                model_without_ddp.fixed_mask_ratio = None
+                model_without_ddp.full_mask_prob = 0.2
+                model_without_ddp.gen_schedule_prob = 0.8
+                train_stats['phase2'] = 1
+
+        if args.output_dir and args.save_ckpt_freq > 0 and (
+                epoch % args.save_ckpt_freq == 0 or last_epoch):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        misc.save_model_last(
-            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-            loss_scaler=loss_scaler, epoch=epoch)
+        if args.output_dir and (
+                last_epoch or (args.save_freq > 0 and (epoch + 1) % args.save_freq == 0)):
+            misc.save_model_last(
+                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                loss_scaler=loss_scaler, epoch=epoch)
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
 
@@ -233,6 +357,9 @@ def main(args):
                 log_writer.flush()
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
+
+        if stop:
+            break
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

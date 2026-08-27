@@ -1,4 +1,5 @@
 from functools import partial
+import math
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,18 @@ from taming.models.vqgan import VQModel
 from omegaconf import OmegaConf
 import numpy as np
 import scipy.stats as stats
+
+
+def unknown_count_at_step(step, num_iter=12, n_tokens=256):
+    """How many tokens are still masked at the start of a gen_image step."""
+    unknown = int(n_tokens)
+    for s in range(int(step)):
+        ratio = (s + 1) / float(num_iter)
+        mask_ratio = math.cos(math.pi / 2.0 * ratio)
+        mask_len = int(math.floor(n_tokens * mask_ratio))
+        mask_len = max(1, min(unknown - 1, mask_len))
+        unknown = mask_len
+    return unknown
 
 
 class Attention(nn.Module):
@@ -151,7 +164,10 @@ class MaskedGenerativeEncoderViT(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,
                  mask_ratio_min=0.5, mask_ratio_max=1.0, mask_ratio_mu=0.55, mask_ratio_std=0.25,
-                 label_smoothing=0.1, vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
+                 label_smoothing=0.1, dropout=0.1, fixed_mask_ratio=None,
+                 full_mask_prob=0.0, gen_schedule_prob=0.0, gen_num_iter=12,
+                 decoder_mask_token=False, linear_head=False, use_cond_ids=False,
+                 vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -165,23 +181,35 @@ class MaskedGenerativeEncoderViT(nn.Module):
             param.requires_grad = False
 
         self.codebook_size = config.params.n_embed
+        self.codebook_emb_dim = config.params.embed_dim
         vocab_size = self.codebook_size + 1000 + 1  # 1024 codebook size, 1000 classes, 1 for mask token.
         self.fake_class_label = self.codebook_size + 1100 - 1024
         self.mask_token_label = vocab_size - 1
         self.token_emb = BertEmbeddings(vocab_size=vocab_size,
                                         hidden_size=embed_dim,
                                         max_position_embeddings=256+1,
-                                        dropout=0.1)
+                                        dropout=dropout)
 
         # MAGE variant masking ratio
         self.mask_ratio_min = mask_ratio_min
-        self.mask_ratio_generator = stats.truncnorm((mask_ratio_min - mask_ratio_mu) / mask_ratio_std,
-                                                    (mask_ratio_max - mask_ratio_mu) / mask_ratio_std,
-                                                    loc=mask_ratio_mu, scale=mask_ratio_std)
+        self.fixed_mask_ratio = fixed_mask_ratio
+        self.full_mask_prob = full_mask_prob
+        self.gen_schedule_prob = gen_schedule_prob
+        self.gen_num_iter = gen_num_iter
+        self.use_cond_ids = use_cond_ids
+        self._cached_gt_indices = None
+        self._cached_gt_by_id = None
+        if fixed_mask_ratio is None:
+            self.mask_ratio_generator = stats.truncnorm(
+                (mask_ratio_min - mask_ratio_mu) / mask_ratio_std,
+                (mask_ratio_max - mask_ratio_mu) / mask_ratio_std,
+                loc=mask_ratio_mu, scale=mask_ratio_std)
+        else:
+            self.mask_ratio_generator = None
 
         # --------------------------------------------------------------------------
         # MAGE encoder specifics
-        dropout_rate = 0.1
+        dropout_rate = dropout
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
         num_patches = self.patch_embed.num_patches
 
@@ -200,7 +228,8 @@ class MaskedGenerativeEncoderViT(nn.Module):
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-        self.pad_with_cls_token = True
+        self.pad_with_cls_token = not decoder_mask_token
+        self.linear_head = linear_head
 
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
         self.decoder_pos_embed_learned = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim))  # learnable pos embedding
@@ -217,6 +246,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
         # --------------------------------------------------------------------------
         # MlmLayer
         self.mlm_layer = MlmLayer(feat_emb_dim=decoder_embed_dim, word_emb_dim=embed_dim, vocab_size=vocab_size)
+        self.token_classifier = nn.Linear(decoder_embed_dim, self.codebook_size) if linear_head else None
 
         self.norm_pix_loss = norm_pix_loss
 
@@ -240,7 +270,8 @@ class MaskedGenerativeEncoderViT(nn.Module):
         # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
         torch.nn.init.normal_(self.cls_token, std=.02)
         torch.nn.init.normal_(self.mask_token, std=.02)
-        torch.nn.init.normal_(self.decoder_pos_embed_learned, std=.02)
+        pos_std = 0.2 if not self.pad_with_cls_token else 0.02
+        torch.nn.init.normal_(self.decoder_pos_embed_learned, std=pos_std)
 
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -255,63 +286,143 @@ class MaskedGenerativeEncoderViT(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward_encoder(self, x):
-        # tokenization
-        with torch.no_grad():
-            z_q, _, token_tuple = self.vqgan.encode(x)
+    def _masks_with_counts(self, bsz, seq_len, num_dropped_tokens, num_masked_tokens, device):
+        num_dropped_tokens = min(max(int(num_dropped_tokens), 0), seq_len)
+        num_masked_tokens = min(max(int(num_masked_tokens), num_dropped_tokens), seq_len)
+        if num_dropped_tokens == 0 and num_masked_tokens == 0:
+            zeros = torch.zeros(bsz, seq_len, device=device)
+            return zeros, zeros.clone()
+        if num_dropped_tokens == 0 and num_masked_tokens == seq_len:
+            return torch.zeros(bsz, seq_len, device=device), torch.ones(bsz, seq_len, device=device)
 
-        _, _, token_indices = token_tuple
-        token_indices = token_indices.reshape(z_q.size(0), -1)
-        gt_indices = token_indices.clone().detach().long()
-
-        # masking
-        bsz, seq_len = token_indices.size()
-        mask_ratio_min = self.mask_ratio_min
-        mask_rate = self.mask_ratio_generator.rvs(1)[0]
-
-        num_dropped_tokens = int(np.ceil(seq_len * mask_ratio_min))
-        num_masked_tokens = int(np.ceil(seq_len * mask_rate))
-
-        # it is possible that two elements of the noise is the same, so do a while loop to avoid it
         while True:
-            noise = torch.rand(bsz, seq_len, device=x.device)  # noise in [0, 1]
-            sorted_noise, _ = torch.sort(noise, dim=1)  # ascend: small is remove, large is keep
-            cutoff_drop = sorted_noise[:, num_dropped_tokens-1:num_dropped_tokens]
-            cutoff_mask = sorted_noise[:, num_masked_tokens-1:num_masked_tokens]
-            token_drop_mask = (noise <= cutoff_drop).float()
-            token_all_mask = (noise <= cutoff_mask).float()
-            if token_drop_mask.sum() == bsz*num_dropped_tokens and token_all_mask.sum() == bsz*num_masked_tokens:
-                break
+            noise = torch.rand(bsz, seq_len, device=device)
+            sorted_noise, _ = torch.sort(noise, dim=1)
+            if num_dropped_tokens == 0:
+                token_drop_mask = torch.zeros(bsz, seq_len, device=device)
             else:
-                print("Rerandom the noise!")
-        # print(mask_rate, num_dropped_tokens, num_masked_tokens, token_drop_mask.sum(dim=1), token_all_mask.sum(dim=1))
-        token_indices[token_all_mask.nonzero(as_tuple=True)] = self.mask_token_label
-        # print("Masekd num token:", torch.sum(token_indices == self.mask_token_label, dim=1))
+                cutoff_drop = sorted_noise[:, num_dropped_tokens - 1:num_dropped_tokens]
+                token_drop_mask = (noise <= cutoff_drop).float()
+            if num_masked_tokens == seq_len:
+                token_all_mask = torch.ones(bsz, seq_len, device=device)
+            else:
+                cutoff_mask = sorted_noise[:, num_masked_tokens - 1:num_masked_tokens]
+                token_all_mask = (noise <= cutoff_mask).float()
+            drop_ok = int(token_drop_mask.sum().item()) == bsz * num_dropped_tokens
+            mask_ok = int(token_all_mask.sum().item()) == bsz * num_masked_tokens
+            if drop_ok and mask_ok:
+                break
+            print("Rerandom the noise!")
+        return token_drop_mask, token_all_mask
 
-        # concate class token
-        token_indices = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(device=token_indices.device), token_indices], dim=1)
-        token_indices[:, 0] = self.fake_class_label
-        token_drop_mask = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(), token_drop_mask], dim=1)
-        token_all_mask = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(), token_all_mask], dim=1)
-        token_indices = token_indices.long()
-        # bert embedding
+    def _sample_masks(self, bsz, seq_len, device):
+        u = float(np.random.rand())
+        full_p = float(self.full_mask_prob or 0.0)
+        sched_p = float(self.gen_schedule_prob or 0.0)
+        if u < full_p:
+            return self._masks_with_counts(bsz, seq_len, 0, seq_len, device)
+        if u < full_p + sched_p:
+            step = int(np.random.randint(0, max(int(self.gen_num_iter), 1)))
+            n_mask = unknown_count_at_step(step, int(self.gen_num_iter), seq_len)
+            return self._masks_with_counts(bsz, seq_len, 0, n_mask, device)
+        if self.fixed_mask_ratio is not None:
+            mask_rate = float(self.fixed_mask_ratio)
+        else:
+            mask_rate = float(self.mask_ratio_generator.rvs(1)[0])
+        num_dropped_tokens = int(np.ceil(seq_len * float(self.mask_ratio_min)))
+        num_masked_tokens = int(np.ceil(seq_len * mask_rate))
+        return self._masks_with_counts(bsz, seq_len, num_dropped_tokens, num_masked_tokens, device)
+
+    def _prepend_cls(self, token_indices, token_drop_mask, token_all_mask, cond_ids=None):
+        device = token_indices.device
+        bsz = token_indices.size(0)
+        cls = torch.zeros(bsz, 1, device=device, dtype=token_indices.dtype)
+        token_indices = torch.cat([cls, token_indices], dim=1)
+        if self.use_cond_ids:
+            if cond_ids is None:
+                raise ValueError('use_cond_ids requires cond_ids')
+            cond = cond_ids.to(device=device, dtype=token_indices.dtype).view(-1)
+            if cond.numel() == 1 and bsz > 1:
+                cond = cond.expand(bsz)
+            token_indices[:, 0] = self.codebook_size + cond
+        else:
+            token_indices[:, 0] = self.fake_class_label
+        pad = torch.zeros(bsz, 1, device=device, dtype=token_drop_mask.dtype)
+        token_drop_mask = torch.cat([pad, token_drop_mask], dim=1)
+        token_all_mask = torch.cat([pad, token_all_mask], dim=1)
+        return token_indices.long(), token_drop_mask, token_all_mask
+
+    def _run_encoder(self, token_indices, token_drop_mask):
         input_embeddings = self.token_emb(token_indices)
-        # print("Input embedding shape:", input_embeddings.shape)
-        bsz, seq_len, emb_dim = input_embeddings.shape
-
-        # dropping
+        bsz, _, emb_dim = input_embeddings.shape
         token_keep_mask = 1 - token_drop_mask
-        input_embeddings_after_drop = input_embeddings[token_keep_mask.nonzero(as_tuple=True)].reshape(bsz, -1, emb_dim)
-        # print("Input embedding after drop shape:", input_embeddings_after_drop.shape)
-
-        # apply Transformer blocks
-        x = input_embeddings_after_drop
+        x = input_embeddings[token_keep_mask.nonzero(as_tuple=True)].reshape(bsz, -1, emb_dim)
         for blk in self.blocks:
             x = blk(x)
-        x = self.norm(x)
-        # print("Encoder representation shape:", x.shape)
+        return self.norm(x)
 
-        return x, gt_indices, token_drop_mask, token_all_mask
+    @torch.no_grad()
+    def vqgan_encode(self, imgs):
+        z_q, _, token_tuple = self.vqgan.encode(imgs)
+        _, _, token_indices = token_tuple
+        return token_indices.reshape(z_q.size(0), -1).long()
+
+    @torch.no_grad()
+    def encode_to_indices(self, imgs, cond_ids=None):
+        cache_map = getattr(self, '_cached_gt_by_id', None)
+        if cache_map and cond_ids is not None:
+            rows = []
+            for i in cond_ids.view(-1).tolist():
+                t = cache_map[int(i)]
+                if t.device != imgs.device:
+                    t = t.to(imgs.device)
+                    cache_map[int(i)] = t
+                rows.append(t)
+            return torch.stack(rows, 0)
+        cached = getattr(self, '_cached_gt_indices', None)
+        if cached is not None:
+            if cached.device != imgs.device:
+                cached = cached.to(imgs.device)
+                self._cached_gt_indices = cached
+            if cached.size(0) != imgs.size(0):
+                cached = cached[:1].expand(imgs.size(0), -1).contiguous()
+            return cached
+        return self.vqgan_encode(imgs)
+
+    @torch.no_grad()
+    def decode_indices(self, indices):
+        bsz = indices.size(0)
+        z_q = self.vqgan.quantize.get_codebook_entry(
+            indices.long(), shape=(bsz, 16, 16, self.codebook_emb_dim))
+        return self.vqgan.decode(z_q)
+
+    @torch.no_grad()
+    def predict_full_mask(self, imgs, cond_ids=None):
+        """One-shot greedy tokens from an all-mask input (generation-aligned)."""
+        gt_indices = self.encode_to_indices(imgs, cond_ids)
+        bsz, seq_len = gt_indices.shape
+        device = gt_indices.device
+        token_indices = torch.full(
+            (bsz, seq_len), self.mask_token_label, device=device, dtype=torch.long)
+        token_drop_mask = torch.zeros(bsz, seq_len, device=device)
+        token_all_mask = torch.ones(bsz, seq_len, device=device)
+        token_indices, token_drop_mask, token_all_mask = self._prepend_cls(
+            token_indices, token_drop_mask, token_all_mask, cond_ids=cond_ids)
+        latent = self._run_encoder(token_indices, token_drop_mask)
+        logits = self.forward_decoder(latent, token_drop_mask, token_all_mask)
+        pred = logits[:, 1:, :self.codebook_size].argmax(dim=-1)
+        return pred, gt_indices
+
+    def forward_encoder(self, x, cond_ids=None):
+        gt_indices = self.encode_to_indices(x, cond_ids)
+        token_drop_mask, token_all_mask = self._sample_masks(
+            gt_indices.size(0), gt_indices.size(1), x.device)
+        token_indices = gt_indices.clone()
+        token_indices[token_all_mask.bool()] = self.mask_token_label
+        token_indices, token_drop_mask, token_all_mask = self._prepend_cls(
+            token_indices, token_drop_mask, token_all_mask, cond_ids=cond_ids)
+        latent = self._run_encoder(token_indices, token_drop_mask)
+        return latent, gt_indices, token_drop_mask, token_all_mask
 
     def forward_decoder(self, x, token_drop_mask, token_all_mask):
         # embed tokens
@@ -338,25 +449,32 @@ class MaskedGenerativeEncoderViT(nn.Module):
 
         x = self.decoder_norm(x)
 
+        if self.linear_head:
+            return self.token_classifier(x)
+
         word_embeddings = self.token_emb.word_embeddings.weight.data.detach()
         x = self.mlm_layer(x, word_embeddings)
-        # print("Logits shape:", x.shape)
-
         return x
 
     def forward_loss(self, gt_indices, logits, mask):
         bsz, seq_len = gt_indices.size()
         # logits and mask are with seq_len+1 but gt_indices is with seq_len
-        loss = self.criterion(logits[:, 1:, :self.codebook_size].reshape(bsz*seq_len, -1), gt_indices.reshape(bsz*seq_len))
+        logits_tok = logits[:, 1:, :self.codebook_size]
+        loss = self.criterion(logits_tok.reshape(bsz * seq_len, -1), gt_indices.reshape(bsz * seq_len))
         loss = loss.reshape(bsz, seq_len)
-        loss = (loss * mask[:, 1:]).sum() / mask[:, 1:].sum()  # mean loss on removed patches
-        return loss
+        mask_tok = mask[:, 1:]
+        denom = mask_tok.sum().clamp(min=1.0)
+        loss = (loss * mask_tok).sum() / denom
+        with torch.no_grad():
+            pred = logits_tok.argmax(dim=-1)
+            acc = ((pred == gt_indices).float() * mask_tok).sum() / denom
+        return loss, acc
 
-    def forward(self, imgs):
-        latent, gt_indices, token_drop_mask, token_all_mask = self.forward_encoder(imgs)
+    def forward(self, imgs, cond_ids=None):
+        latent, gt_indices, token_drop_mask, token_all_mask = self.forward_encoder(imgs, cond_ids)
         logits = self.forward_decoder(latent, token_drop_mask, token_all_mask)
-        loss = self.forward_loss(gt_indices, logits, token_all_mask)
-        return loss, imgs, token_all_mask
+        loss, acc = self.forward_loss(gt_indices, logits, token_all_mask)
+        return loss, acc, token_all_mask
 
 
 def mage_vit_base_patch16(**kwargs):

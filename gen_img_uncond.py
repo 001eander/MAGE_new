@@ -3,6 +3,7 @@ import os
 import math
 import argparse
 import models_mage
+from models_mage import unknown_count_at_step
 import numpy as np
 from tqdm import tqdm
 import cv2
@@ -10,7 +11,10 @@ import cv2
 
 def mask_by_random_topk(mask_len, probs, temperature=1.0):
     mask_len = mask_len.squeeze()
-    confidence = torch.log(probs) + torch.Tensor(temperature * np.random.gumbel(size=probs.shape)).cuda()
+    gumbel = torch.tensor(
+        temperature * np.random.gumbel(size=tuple(probs.shape)),
+        device=probs.device, dtype=probs.dtype)
+    confidence = torch.log(probs) + gumbel
     sorted_confidence, _ = torch.sort(confidence, axis=-1)
     # Obtains cut off threshold given the mask lengths.
     cut_off = sorted_confidence[:, mask_len.long()-1:mask_len.long()]
@@ -19,7 +23,7 @@ def mask_by_random_topk(mask_len, probs, temperature=1.0):
     return masking
 
 
-def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
+def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5, greedy=False, cond_ids=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     codebook_emb_dim = 256
@@ -27,17 +31,28 @@ def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
     mask_token_id = model.mask_token_label
     unknown_number_in_the_beginning = 256
     _CONFIDENCE_OF_KNOWN_TOKENS = +np.inf
+    greedy = greedy or choice_temperature <= 0
+    device = next(model.parameters()).device
 
-    initial_token_indices = mask_token_id * torch.ones(bsz, unknown_number_in_the_beginning)
+    initial_token_indices = mask_token_id * torch.ones(
+        bsz, unknown_number_in_the_beginning, device=device)
 
-    token_indices = initial_token_indices.cuda()
+    token_indices = initial_token_indices
 
     for step in range(num_iter):
         cur_ids = token_indices.clone().long()
 
         token_indices = torch.cat(
-            [torch.zeros(token_indices.size(0), 1).cuda(device=token_indices.device), token_indices], dim=1)
-        token_indices[:, 0] = model.fake_class_label
+            [torch.zeros(token_indices.size(0), 1, device=device), token_indices], dim=1)
+        if getattr(model, 'use_cond_ids', False):
+            if cond_ids is None:
+                raise ValueError('use_cond_ids requires cond_ids in gen_image')
+            cond = cond_ids.to(device=device, dtype=torch.long).view(-1)
+            if cond.numel() == 1 and bsz > 1:
+                cond = cond.expand(bsz)
+            token_indices[:, 0] = model.codebook_size + cond
+        else:
+            token_indices[:, 0] = model.fake_class_label
         token_indices = token_indices.long()
         token_all_mask = token_indices == mask_token_id
 
@@ -57,8 +72,11 @@ def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
         logits = logits[:, 1:, :codebook_size]
 
         # get token prediction
-        sample_dist = torch.distributions.categorical.Categorical(logits=logits)
-        sampled_ids = sample_dist.sample()
+        if greedy:
+            sampled_ids = torch.argmax(logits, dim=-1)
+        else:
+            sample_dist = torch.distributions.categorical.Categorical(logits=logits)
+            sampled_ids = sample_dist.sample()
 
         # get ids for next step
         unknown_map = (cur_ids == mask_token_id)
@@ -67,8 +85,6 @@ def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
         # determined by mask_ratio * unknown_number_in_the_beginning.
         ratio = 1. * (step + 1) / num_iter
 
-        mask_ratio = np.cos(math.pi / 2. * ratio)
-
         # sample ids according to prediction confidence
         probs = torch.nn.functional.softmax(logits, dim=-1)
         selected_probs = torch.squeeze(
@@ -76,11 +92,8 @@ def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
 
         selected_probs = torch.where(unknown_map, selected_probs.double(), _CONFIDENCE_OF_KNOWN_TOKENS).float()
 
-        mask_len = torch.Tensor([np.floor(unknown_number_in_the_beginning * mask_ratio)]).cuda()
-        # Keeps at least one of prediction in this round and also masks out at least
-        # one and for the next iteration
-        mask_len = torch.maximum(torch.Tensor([1]).cuda(),
-                                 torch.minimum(torch.sum(unknown_map, dim=-1, keepdims=True) - 1, mask_len))
+        mask_len = unknown_count_at_step(step + 1, num_iter, unknown_number_in_the_beginning)
+        mask_len = torch.full((cur_ids.size(0), 1), float(mask_len), device=cur_ids.device)
 
         # Sample masking tokens for next iteration
         masking = mask_by_random_topk(mask_len[0], selected_probs, choice_temperature * (1 - ratio))
@@ -90,54 +103,67 @@ def gen_image(model, bsz, seed, num_iter=12, choice_temperature=4.5):
     # vqgan visualization
     z_q = model.vqgan.quantize.get_codebook_entry(sampled_ids, shape=(bsz, 16, 16, codebook_emb_dim))
     gen_images = model.vqgan.decode(z_q)
-    return gen_images
+    return gen_images, sampled_ids
 
 
-parser = argparse.ArgumentParser('MAGE generation', add_help=False)
-parser.add_argument('--temp', default=4.5, type=float,
-                    help='sampling temperature')
-parser.add_argument('--num_iter', default=12, type=int,
-                    help='number of iterations for generation')
-parser.add_argument('--batch_size', default=32, type=int,
-                    help='batch size for generation')
-parser.add_argument('--num_images', default=50000, type=int,
-                    help='number of images to generate')
-parser.add_argument('--ckpt', type=str,
-                    help='checkpoint')
-parser.add_argument('--model', default='mage_vit_base_patch16', type=str,
-                    help='model')
-parser.add_argument('--output_dir', default='output_dir/fid/gen/mage-vitb', type=str,
-                    help='name')
+def get_args_parser():
+    parser = argparse.ArgumentParser('MAGE generation', add_help=False)
+    parser.add_argument('--temp', default=4.5, type=float,
+                        help='sampling temperature; <=0 implies greedy')
+    parser.add_argument('--greedy', action='store_true',
+                        help='Use argmax instead of categorical sampling')
+    parser.add_argument('--num_iter', default=12, type=int,
+                        help='number of iterations for generation')
+    parser.add_argument('--batch_size', default=32, type=int,
+                        help='batch size for generation')
+    parser.add_argument('--num_images', default=50000, type=int,
+                        help='number of images to generate')
+    parser.add_argument('--ckpt', type=str,
+                        help='checkpoint')
+    parser.add_argument('--model', default='mage_vit_base_patch16', type=str,
+                        help='model')
+    parser.add_argument('--output_dir', default='output_dir/fid/gen/mage-vitb', type=str,
+                        help='name')
+    return parser
 
-args = parser.parse_args()
 
-vqgan_ckpt_path = 'vqgan_jax_strongaug.ckpt'
+def main():
+    args = get_args_parser().parse_args()
 
-model = models_mage.__dict__[args.model](norm_pix_loss=False,
-                                         mask_ratio_mu=0.55, mask_ratio_std=0.25,
-                                         mask_ratio_min=0.0, mask_ratio_max=1.0,
-                                         vqgan_ckpt_path=vqgan_ckpt_path)
-model.to(0)
+    vqgan_ckpt_path = 'vqgan_jax_strongaug.ckpt'
 
-checkpoint = torch.load(args.ckpt, map_location='cpu')
-model.load_state_dict(checkpoint['model'])
-model.eval()
+    model = models_mage.__dict__[args.model](norm_pix_loss=False,
+                                             mask_ratio_mu=0.55, mask_ratio_std=0.25,
+                                             mask_ratio_min=0.0, mask_ratio_max=1.0,
+                                             vqgan_ckpt_path=vqgan_ckpt_path)
+    model.to(0)
 
-num_steps = (args.num_images + args.batch_size - 1) // args.batch_size
-gen_img_list = []
-save_folder = os.path.join(args.output_dir, "temp{}-iter{}".format(args.temp, args.num_iter))
-if not os.path.exists(save_folder):
-    os.makedirs(save_folder)
-for i in tqdm(range(num_steps)):
-    with torch.no_grad():
-        gen_images_batch = gen_image(model, bsz=args.batch_size, seed=i, choice_temperature=args.temp, num_iter=args.num_iter)
-    gen_images_batch = gen_images_batch.detach().cpu()
-    gen_img_list.append(gen_images_batch)
+    checkpoint = torch.load(args.ckpt, map_location='cpu')
+    model.load_state_dict(checkpoint['model'])
+    model.eval()
 
-    # save img
-    for b_id in range(args.batch_size):
-        if i*args.batch_size+b_id >= args.num_images:
-            break
-        gen_img = np.clip(gen_images_batch[b_id].numpy().transpose([1, 2, 0]) * 255, 0, 255)
-        gen_img = gen_img.astype(np.uint8)[:, :, ::-1]
-        cv2.imwrite(os.path.join(save_folder, '{}.png'.format(str(i*args.batch_size+b_id).zfill(5))), gen_img)
+    greedy = args.greedy or args.temp <= 0
+    num_steps = (args.num_images + args.batch_size - 1) // args.batch_size
+    gen_img_list = []
+    save_folder = os.path.join(args.output_dir, "temp{}-iter{}".format(args.temp, args.num_iter))
+    if not os.path.exists(save_folder):
+        os.makedirs(save_folder)
+    for i in tqdm(range(num_steps)):
+        with torch.no_grad():
+            gen_images_batch, _ = gen_image(
+                model, bsz=args.batch_size, seed=i, choice_temperature=args.temp,
+                num_iter=args.num_iter, greedy=greedy)
+        gen_images_batch = gen_images_batch.detach().cpu()
+        gen_img_list.append(gen_images_batch)
+
+        # save img
+        for b_id in range(args.batch_size):
+            if i*args.batch_size+b_id >= args.num_images:
+                break
+            gen_img = np.clip(gen_images_batch[b_id].numpy().transpose([1, 2, 0]) * 255, 0, 255)
+            gen_img = gen_img.astype(np.uint8)[:, :, ::-1]
+            cv2.imwrite(os.path.join(save_folder, '{}.png'.format(str(i*args.batch_size+b_id).zfill(5))), gen_img)
+
+
+if __name__ == '__main__':
+    main()
