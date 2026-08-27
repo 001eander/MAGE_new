@@ -1,191 +1,204 @@
-# MAGE PyTorch Implementation
+# MAGE 实验说明
 
-<p align="center">
-  <img src="figures/method.png" width="720">
-</p>
+本文件记录**实验内容与过关要求**。上游官方说明（安装、论文预训练、linear probe、FID 评测命令）见 [README.official.md](README.official.md)。
 
-This is a PyTorch/GPU re-implementation of the paper 
-<a href="https://arxiv.org/abs/2211.09117">MAGE: MAsked Generative Encoder to Unify Representation Learning and Image Synthesis</a> (to appear in CVPR 2023):
+仓库代码基于 [MAGE](https://arxiv.org/abs/2211.09117) 的 PyTorch 实现。MAGE 预测的是 VQGAN codebook id（256 个、词表 1024），不是像素。像素上限是同一 256 crop 的 VQGAN encode→decode。
 
-```
-@article{li2022mage,
-  title={MAGE: MAsked Generative Encoder to Unify Representation Learning and Image Synthesis},
-  author={Li, Tianhong and Chang, Huiwen and Mishra, Shlok Kumar and Zhang, Han and Katabi, Dina and Krishnan, Dilip},
-  journal={arXiv preprint arXiv:2211.09117},
-  year={2022}
-}
-```
+---
 
-MAGE is a unified framework for both generative modeling and representation
-learning, achieving SOTA results in both class-unconditional image generation
-and linear probing on ImageNet-1K.
-<p align="center">
-  <img src="figures/result.png" width="360">
-</p>
+## 1. 范围
 
-A large portion of codes in this repo is based on <a href="https://github.com/facebookresearch/mae">MAE</a> and <a href="https://github.com/CompVis/taming-transformers">VQGAN</a>.
-The original implementation was in JAX/TPU.
+本文件只规定实验内容和过关要求，不记录已跑结果或探路脚本。必须按条完成并留证据；不能用另一个实验的产物顶替清单里的条目。
 
-## Preparation
+1. **共有协议**：在一组固定的 \(n\) 上训练，报告同一套生成质量指标；大 \(n\) 另做泛化。
+2. **MAGE 专项**：分类头 / label smoothing 的理论解与验证、半 A 半 B、训练–测试 mask 匹配、VQGAN 离散化对 FID 的贡献。
 
-### Dataset
-Download [ImageNet](http://image-net.org/download) dataset, and place it in your `IMAGENET_DIR`.
+---
 
-### Installation
+## 2. 共有协议（所有对照共用）
 
-A suitable [conda](https://conda.io/) environment named `mage` can be created and activated with:
+### 2.1 训练规模 \(n\)
+
+必须在同一数据来源、同一预处理上跑完整序列：
 
 ```
-conda env create -f environment.yaml
-conda activate mage
+n = 1, 2, 10, 100, 1000, 10000
 ```
 
-Download the code
-```
-git clone https://github.com/LTH14/mage.git
-cd mage
-```
-Use <a href="https://drive.google.com/file/d/13S_unB87n6KKuuMdyMnyExW0G1kplTbP/view?usp=sharing">this link</a>
-to download the pre-trained VQGAN tokenzier and put it in the mage directory.
+`n = 50000` 标了 `*`：与论文 class-unconditional FID 对齐的规模，算力够再跑；不跑则在结果里写明「未做」，不得用更小 \(n\) 的数字冒充。
 
-## Usage
+要求：
 
-### Pre-training
+- 每个 \(n\) 是该规模下的**同一批固定样本**（写死列表或种子），对照之间不得换图。
+- \(n=1,2\) 可以和专项里的半 A 半 B 共用这两张；不得另造一套「只用于过拟合」的图。
+- 报告时按 \(n\) 分列，禁止只报某一个 \(n\)。
 
-To pre-train a MAGE ViT-B model with 4096 batch size using 8 servers with 8 V100 GPUs per server:
-```
-python -m torch.distributed.launch --node_rank=0 --nproc_per_node=8 --nnodes=8 \
---master_addr="${MASTER_SERVER_ADDRESS}" --master_port=12344 \
-main_pretrain.py \
---batch_size 64 \
---model mage_vit_base_patch16 \
---mask_ratio_min 0.5 --mask_ratio_max 1.0 \
---mask_ratio_mu 0.55 --mask_ratio_std 0.25 \
---epochs 1600 \
---warmup_epochs 40 \
---blr 1.5e-4 --weight_decay 0.05 \
---output_dir ${OUTPUT_DIR} \
---data_path ${IMAGENET_DIR} \
---dist_url tcp://${MASTER_SERVER_ADDRESS}:2214
-```
+数据约定（本仓库）：
 
-The following table provides the performance and weights of the
-pre-trained checkpoints used in the paper, converted from JAX/TPU
-to PT/GPU:
-<table><tbody>
-<!-- START TABLE -->
-<!-- TABLE HEADER -->
-<th valign="bottom"></th>
-<th valign="bottom">ViT-Base</th>
-<th valign="bottom">ViT-Large</th>
-<!-- TABLE BODY -->
-<tr><td align="left">Checkpoint</td>
-<td align="center"><a href="https://drive.google.com/file/d/1Q6tbt3vF0bSrv5sPrjpFu8ksG3vTsVX2/view?usp=sharing">Google Drive</a></td>
-<td align="center"><a href="https://drive.google.com/file/d/15xBPa8EIa0IRUiRYtXiYOC9JZVyMIFrB/view?usp=sharing">Google Drive</a></td>
-</tr>
-</tr>
-<tr><td align="left">Class-unconditional Generation FID </td>
-<td align="center">11.1</td>
-<td align="center">9.10</td>
-</tr>
-</tr>
-<tr><td align="left">Class-unconditional Generation IS </td>
-<td align="center">81.2</td>
-<td align="center">105.1</td>
-</tr>
-<tr><td align="left">Linear Probing Top-1 Accuracy</td>
-<td align="center">74.7%</td>
-<td align="center">78.9%</td>
-<tr><td align="left">Fine-tuning Top-1 Accuracy</td>
-<td align="center">82.5% <a href="https://drive.google.com/file/d/1q-q-L9x7w9a5Q4aEfFrdRQUpjM-0kAsS/view?usp=sharing">Checkpoint</a></td>
-<td align="center">83.9% <a href="https://drive.google.com/file/d/13w0LOnJ-MnyI2dBaGEkmdsf5xik2PUS6/view?usp=sharing">Checkpoint</a></td>
-</tr>
-</tbody></table>
+- 小 \(n\)（≤1000）可用 Tiny-ImageNet 的固定子集，但必须写清：原图 64×64，训练/评测前升到 256。这类数字**不能**和论文 ImageNet-256 FID 直接比。
+- 要报与论文可比的 FID（尤其 \(n=10000\) 和 `*50000`），必须用 ImageNet 256×256 子集，以及官方 `prepare_imgnet_val.py` 做出的 val 参照。
+- 冻结 VQGAN：`vqgan_jax_strongaug.ckpt`。换 tokenizer 则全部重跑。
 
-### Linear Probing
+### 2.2 实际训练表现：必须报告的指标
 
-To perform linear probing on pre-trained MAGE model using 4 servers with 8 V100 GPUs per server:
-```
-python -m torch.distributed.launch --node_rank=0 --nproc_per_node=8 --nnodes=4 \
---master_addr="${MASTER_SERVER_ADDRESS}" --master_port=12344 \
-main_linprobe.py \ 
---batch_size 128 \
---model vit_base_patch16 \
---global_pool \
---finetune ${PRETRAIN_CHKPT} \
---epochs 90 \
---blr 0.1 \
---weight_decay 0.0 \
---output_dir ${OUTPUT_DIR} \
---data_path ${IMAGENET_DIR} \
---dist_eval --dist_url tcp://${MASTER_SERVER_ADDRESS}:6311
-```
+每个 \(n\)、每种对照配方都要留下同一套产物。缺一项即该格未完成。
 
-For ViT-L, set `--blr 0.05`.
+| 指标 | 含义 | 证据 |
+|---|---|---|
+| **FID** | 生成分布相对参照集 | `metrics.json` 中的数值 + 所用 `input1` / `input2` 路径 |
+| **覆盖率** | 训练集被生成样本覆盖到的比例 | 定义见下，写入 `metrics.json` |
+| **平均匹配误差** | 生成样本到最近训练样本的距离 | token 与像素各报一次 |
+| **图像质量** | 样本是否可读、是否塌缩 | 固定网格可视化，不得只贴一张「最好看的」 |
 
-### Fine-tuning
+操作化定义（本仓库以此为准；改定义必须改本文件并重算全部 \(n\)）：
 
-To perform fine-tuning with pre-trained ViT-B model using 4 servers with 8 V100 GPUs per server:
+**FID**
 
-```
-python -m torch.distributed.launch --node_rank=0  --nproc_per_node=8 --nnodes=4 \
---master_addr="${MASTER_SERVER_ADDRESS}" --master_port=12344 \
-main_finetune.py \
---batch_size 32 \
---model vit_base_patch16 \
---global_pool \
---finetune ${PRETRAIN_CHKPT} \
---epochs 100 \
---blr 2.5e-4 --layer_decay 0.65 --interpolation bicubic \
---weight_decay 0.05 --drop_path 0.1 --reprob 0 --mixup 0.8 --cutmix 1.0 \
---output_dir ${OUTPUT_DIR} \
---data_path ${IMAGENET_DIR} \
---dist_eval --dist_url tcp://${MASTER_SERVER_ADDRESS}:6311
-```
+- 参照集：与该 \(n\) 同域。Tiny 子集对 Tiny 子集的 VQGAN 重建或升采样 val；ImageNet-256 对 `prepare_imgnet_val.py` 的 val。
+- 另报一档 **VQGAN 重建 FID**（把参照集 encode→decode 再对原参照算 FID）。这是离散化地板，见 §4.4。生成 FID 必须和这一档写在一起。
+- 生成张数：小 \(n\) 至少 `max(1000, 50n)`（有重复也要写明）；\(n \ge 10000\) 且与论文对齐时用 50000 张。采样温度、步数、是否 greedy 必须在 `metrics.json` 写死。
 
-For ViT-L, set `--epochs 50 --layer_decay 0.75 --drop_path 0.2`.
+**覆盖率**
 
-### Class Unconditional Generation
+- 对每个训练样本，在生成集合里找最近邻（距离同「匹配误差」的 token Hamming）。
+- 覆盖 = 最近邻 token 错误数 \(=0\) 的训练样本比例（精确覆盖）。
+- 另报 **松覆盖**：最近邻 Hamming \(\le 16/256\)（6.25%）的比例。
+- 小 \(n\) 两种都要；大 \(n\) 精确覆盖可以接近 0，松覆盖和匹配误差仍要报。
 
-To perform class unconditional generation with pre-trained MAGE model using a single V100 GPU:
+**平均匹配误差**
 
-```
-python gen_img_uncond.py --temp 6.0 --num_iter 20 \
---ckpt ${PRETRAIN_CHKPT} --batch_size 32 --num_images 50000 \
---model mage_vit_base_patch16 --output_dir ${OUTPUT_DIR}
-```
+- Token：生成图 VQ id 与最近训练图 VQ id 的 Hamming / 256，对生成集平均。
+- 像素：该对在 VQGAN 解码空间的 MSE（不是相对未量化 JPEG）。
+- 小 \(n\) 另报「相对自己」：oneshot 对**同一张**训练图的 token acc（查找表是否还在），与「相对最近邻」分开写。
 
-To quantitatively evaluate FID/IS, please first generate 256x256 
-ImageNet validation images using
+**图像质量（可视化）**
 
-```
-python prepare_imgnet_val.py --data_path ${IMAGENET_DIR} --output_dir ${OUTPUT_DIR}
-```
+- 每个 \(n\) × 每种配方一张固定网格：至少 8 个生成样本 + 对应最近邻训练图 + 该训练图的 VQGAN 重建。
+- \(n=1,2\) 必须能一眼看出是复现、混合还是替换。
+- 文件名写入 `metrics.json`，例如 `outputs/<exp>/n<N>/grid.png`。
 
-Then install the <a href="https://github.com/toshas/torch-fidelity">torch-fidelity</a>
-package by
-```
-pip install torch-fidelity
-```
+### 2.3 大 \(n\) 下的泛化
 
-Then use the above package to evaluate FID/IS of the images generated 
-by our models against 256x256 ImageNet validation images by 
-```
-fidelity --gpu 0 --isc --fid --input1 ${GENERATED_IMAGES_DIR} --input2 ${IMAGENET256X256_DIR}
-```
+在 \(n\in\{1000, 10000\}\) 上必做；`*50000` 若训练了也做。\(n\le100\) 不做「大 \(n\) 泛化」结论。
 
-Here are some examples of our class-unconditional generation:
-<p align="center">
-  <img src="figures/uncond-gen.png" width="480">
-</p>
+1. **FID**  
+   与 §2.2 同一套生成设置，看 FID 随 \(n\) 是否下降、是否接近 VQGAN 重建地板。
 
-### MAGE-C
-Here we provide the pre-trained MAGE-C 
-checkpoints converted from JAX/TPU to PT/GPU: 
-<a href="https://drive.google.com/file/d/1069p6ZURt-xLFYrHfUiySQt1VCmWsun3/view?usp=sharing">ViT-B</a>,
-<a href="https://drive.google.com/file/d/1GOz8l6N-3LcUrM6a--TnBztN7NJpZ-Hp/view?usp=sharing">ViT-L</a>.
-PyTorch training script coming soon. 
+2. **噪声扰动**  
+   对**已收敛**模型，只改测试输入，不重训：
+   - Token 翻转：随机把可见 VQ id 换成其它 codebook id，翻转比例 \(p\in\{0, 0.05, 0.1, 0.2, 0.5\}\)。
+   - 像素高斯：在 256 crop 上加 \(\sigma\in\{0, 0.05, 0.1, 0.2\}\)（像素值 \([0,1]\)），再 VQ 编码后生成 / 补全。
+   - 每个 \(p\) 或 \(\sigma\) 报告 FID 与平均匹配误差。
+   - 目的：大 \(n\) 学到的是可扰动的局部结构，还是对训练 token 图的死记。
 
-### Contact
+---
 
-If you have any questions, feel free to contact me through email (tianhong@mit.edu). Enjoy!
+## 3. 对照必须公平
+
+除被消融的那一两个旋钮外，下列项在同一张结果表里必须相同：
+
+- \(n\) 与样本列表
+- 模型（默认 `mage_vit_base_patch16`）
+- VQGAN 权重
+- 优化器、有效 batch、epoch / 早停规则
+- 测试采样（温度、迭代步数、是否 greedy、是否同时 unmask）
+
+禁止把「过拟合专用配方」和「官方配方」的生成图放在同一行比较却不标配方。
+
+---
+
+## 4. MAGE 专项
+
+专项都走 §2 的共有指标。小 \(n\)（1、2、10）是机制实验的主场；大 \(n\) 只验证机制是否还在。
+
+### 4.1 理论解及实验验证
+
+**因子（必须做成 2×2，禁止只跑能背下来的那一格）：**
+
+| 分类头 | 实现 | 理论期望（argmax） |
+|---|---|---|
+| 点积 softmax | 官方 `MlmLayer`：`h` 与 **detach** 的 `word_embeddings` 做点积 | \(h\) 落在 codebook 几何里；加 LS 时最优 \(h\) 对齐 \((1-\varepsilon)e_y+(\varepsilon/K)\sum e_k\)，argmax 可以是「像 \(y\) 的另一个 id」 |
+| 自由 logit | `--linear_head`：`Linear(decoder_dim → 1024)` | 无 LS 时可变成 onehot；有 LS 时 softmax 拟合平滑分布，**argmax 仍可以是 \(y\)** |
+
+| Loss | 实现 | 理论期望 |
+|---|---|---|
+| label smoothing | 默认 \(\varepsilon=0.1\) | 单独不阻止自由头精确 argmax；与点积相乘才偏向近似替换 |
+| 无 LS | `--label_smoothing 0` | 自由头允许精确 token 解 |
+
+每个格子报告：oneshot token acc（相对训练图）、错位 token 与 GT 在 codebook 嵌入中的余弦 / L2（相对随机错位）、§2.2 的 FID / 覆盖率 / 匹配误差 / 网格图。
+
+不得用单一 \(n\)、单一配方的精确复现代替 2×2。失败格子若同时改了头、mask、学习率等，不得归因成某一个因子。
+
+### 4.2 泛化性质：点积 / LS → 近似 patch 替换
+
+主张：官方头 + LS 学的不是「该位置必须是 id=\(y\)」，而是「\(h\) 靠近 \(y\) 一类 codebook 向量」；可见邻域一变，就换成视觉相近的 patch。
+
+除 4.1 的错位邻域统计外，必须用 §4.3 的半 A 半 B 作为主证据。自由头 + 无 LS 应更接近查找表；点积 + LS 应更接近局部替换。两种都要跑，只跑一种不算验证。
+
+### 4.3 测试时同时 unmask 多个；半 A 半 B
+
+生成一步是对所有未知位算各自的 \(p(x_i\mid\text{可见})\)，同一步内互不条件化。一次揭开越多，越容易拼出内部不一致的图。
+
+**半 A 半 B（必做，\(n=2\) 主实验）：**
+
+1. 固定图像 A、B（与 \(n=2\) 训练样本相同）。
+2. 在 **VQ token 图**上拼接，至少两种几何，结果分开报：
+   - 左右：左 8×16 来自 A，右 8×16 来自 B；
+   - 棋盘或随机各 128。
+3. 可见为拼图，补缺失（或 oneshot 全图）。对比：
+   - 同一步揭开全部未知；
+   - 逐步、每步只揭 1 个未知。
+4. 报告：预测 token 更像 A、更像 B、还是像拼缝上的局部替换；相对「神谕拼图」（A 侧全 A、B 侧全 B）的 Hamming；可视化（可见拼图 / oneshot / 逐步 / A / B / 各自 VQGAN）。
+
+官方 12 步 remask 会盖住已正确 token，**不是**本实验，不得用来代替半 A 半 B。
+
+### 4.4 训练与测试 mask ratio 匹配：0–1 vs 0.5–1
+
+官方训练：`mask_ratio ∈ [0.5, 1]`，且 encoder 按 `mask_ratio_min` **固定 drop 50%**。测试从 0 可见走到几乎全可见。训练几乎不看到「空上下文」，也看不到「encoder 拥有远多于 128 个 token」。
+
+对照（只改 mask 采样，头和 LS 跟官方或跟 2×2 的指定格子，两套都要表注）：
+
+| 名称 | 训练 | 意图 |
+|---|---|---|
+| `0.5-1` | `mask_ratio_min=0.5`，官方 truncnorm | 论文默认，与测试 schedule 错位 |
+| `0-1` | `mask_ratio_min=0`，mask 可从 0 到 1，且 drop 不再钉死 50% | 覆盖生成全程 |
+
+同一测试协议（oneshot、官方迭代、半 A 半 B）下比 token acc、匹配误差、FID。不得只在 `fixed_mask_ratio=1.0` 上声称已经对齐。
+
+### 4.5 离散化误差：FID 与 VQGAN
+
+MAGE 像素上限是 VQGAN 重建，不是原图。论文 FID（ViT-B 11.1 / ViT-L 9.10）里有一块永远付在 1024 词表、16×16 上。
+
+每个需要报 FID 的格子必须并排三档：
+
+1. **地板：** FID(参照集的 VQGAN 重建, 参照集)
+2. **token 完美上限：** 若生成 token 等于参照的 VQ id，像素 ≡ 重建，FID = 地板
+3. **实际生成 FID：** 模型采样 vs 参照集
+
+(3)−(1) 才是头 / LS / mask / 采样的误差；(1) 是 VQGAN 税。禁止只报 (3)。Tiny 升采样的 (1) 会很高，不得写成「MAGE 很差」或与论文 11.1 比。
+
+---
+
+## 5. 什么叫实验完成
+
+完成不是「有脚本能训」。每一条都要有当前目录里的文件能核对。
+
+- [ ] §2.1 的每个必做 \(n\) 都有固定样本列表与训练日志
+- [ ] 每个 \(n\) × 每种对照都有 FID、覆盖率、平均匹配误差、网格图
+- [ ] \(n\in\{1000,10000\}\) 有噪声扰动曲线
+- [ ] §4.1 的 2×2 四格都有，且除头和 LS 外配方相同
+- [ ] §4.3 半 A 半 B（至少左右 + 一种打散；oneshot vs 逐步单 token）有图有表
+- [ ] §4.4 `0-1` 与 `0.5-1` 在同一测试协议下对比
+- [ ] 每个 FID 数字旁有 VQGAN 重建地板
+- [ ] `*50000` 未跑则写明，不用小 \(n\) 顶
+
+---
+
+## 6. 机器与代码入口
+
+- 登录节点无 GPU。训练、评测、CUDA 检查走 LSF：`bsub < scripts/....sh`，在仓库根目录提交。
+- 官方环境：`~/miniforge3/envs/mage`（Python 3.8，PyTorch 1.7.1，CUDA 10.2）。只上 V100（gpu01–08、gpu11–12），不要上 A100 / L20。
+- 解释器：`~/miniforge3/envs/mage/bin/python`。
+- 实验输出按 `outputs/<课题>/n<N>/` 分目录，互不覆盖。
+
+上游预训练、生成、FID 命令仍以 [README.official.md](README.official.md) 为准；那些是论文复现，不是本实验的完成条件。
