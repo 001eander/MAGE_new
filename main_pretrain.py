@@ -66,6 +66,8 @@ def get_args_parser():
                         help='Mask ratio distribution std')
     parser.add_argument('--grad_clip', type=float, default=3.0,
                         help='Gradient clip')
+    parser.add_argument('--label_smoothing', type=float, default=0.1,
+                        help='Token CE label smoothing; set 0 for memorization')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -173,6 +175,7 @@ def main(args):
 
     model = models_mage.__dict__[args.model](mask_ratio_mu=args.mask_ratio_mu, mask_ratio_std=args.mask_ratio_std,
                                              mask_ratio_min=args.mask_ratio_min, mask_ratio_max=args.mask_ratio_max,
+                                             label_smoothing=args.label_smoothing,
                                              vqgan_ckpt_path=vqgan_ckpt_path)
 
     model.to(device)

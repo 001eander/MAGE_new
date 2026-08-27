@@ -151,7 +151,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,
                  mask_ratio_min=0.5, mask_ratio_max=1.0, mask_ratio_mu=0.55, mask_ratio_std=0.25,
-                 vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
+                 label_smoothing=0.1, vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -220,7 +220,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
 
         self.norm_pix_loss = norm_pix_loss
 
-        self.criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+        self.criterion = LabelSmoothingCrossEntropy(smoothing=label_smoothing)
 
         self.initialize_weights()
 
