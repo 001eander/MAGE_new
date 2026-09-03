@@ -105,6 +105,21 @@ class ImageListDataset(Dataset):
         return img, 0
 
 
+class TokenIndexDataset(Dataset):
+    """Precomputed VQGAN codebook ids [N, 256]. Label unused (always 0)."""
+
+    def __init__(self, tokens):
+        if hasattr(tokens, 'detach'):
+            tokens = tokens.detach().cpu().long()
+        self.tokens = tokens
+
+    def __len__(self):
+        return int(self.tokens.size(0))
+
+    def __getitem__(self, index):
+        return self.tokens[index], 0
+
+
 def generation_defaults(n):
     return {
         'temperature': DEFAULT_TEMPERATURE,
