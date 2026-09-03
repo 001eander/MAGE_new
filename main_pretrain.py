@@ -26,6 +26,43 @@ import models_mage
 from engine_pretrain import train_one_epoch
 
 
+def encode_dataset_tokens(model, dataset, device, batch_size):
+    """Walk dataset index order and cache VQGAN codebook ids."""
+    model.eval()
+    rows = []
+    n_total = len(dataset)
+    # Train batch can be 100; VQGAN encode of 100×256 hung on V100. Cap cache.
+    enc_bs = min(int(batch_size), 32)
+    with torch.no_grad():
+        for start in range(0, n_total, enc_bs):
+            end = min(start + enc_bs, n_total)
+            batch = torch.stack([dataset[i][0] for i in range(start, end)], dim=0)
+            batch = batch.to(device, non_blocking=True)
+            z_q, _, token_tuple = model.vqgan.encode(batch)
+            _, _, token_indices = token_tuple
+            rows.append(token_indices.reshape(z_q.size(0), -1).detach().cpu().long())
+            if end == n_total or (end // 500) != (start // 500):
+                print('cache_tokens', end, '/', n_total, flush=True)
+    model.train()
+    return torch.cat(rows, dim=0)
+
+
+def rebuild_loader(dataset, args):
+    num_tasks = misc.get_world_size()
+    global_rank = misc.get_rank()
+    sampler = torch.utils.data.DistributedSampler(
+        dataset, num_replicas=num_tasks, rank=global_rank, shuffle=True
+    )
+    loader = torch.utils.data.DataLoader(
+        dataset, sampler=sampler,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+    )
+    return sampler, loader
+
+
 def get_args_parser():
     parser = argparse.ArgumentParser('MAGE pre-training', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int,
@@ -68,6 +105,15 @@ def get_args_parser():
                         help='Gradient clip')
     parser.add_argument('--label_smoothing', type=float, default=0.1,
                         help='Token CE label smoothing; set 0 for memorization')
+    parser.add_argument('--linear_head', action='store_true',
+                        help='Independent Linear(decoder_dim, 1024) head instead of tied MlmLayer')
+    parser.add_argument('--save_last_freq', default=1, type=int,
+                        help='Write checkpoint-last.pth every N epochs (always on the final epoch)')
+    parser.add_argument('--save_ckpt_freq', default=40, type=int,
+                        help='Write checkpoint-<epoch>.pth every N epochs; 0 disables numbered checkpoints')
+    parser.add_argument('--log_tb_freq', default=1, type=int,
+                        help='Write TensorBoard scalars every N epochs, using the epoch '
+                             'index as the step (always on the final epoch); 0 disables')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -78,6 +124,10 @@ def get_args_parser():
                         help='Frozen relative-path list (e.g. splits/n2.txt). Paths are relative to --data_path.')
     parser.add_argument('--no_aug', action='store_true',
                         help='Deterministic Resize+CenterCrop (for memorization); default is random crop and flip')
+    parser.add_argument('--cache_tokens', action='store_true',
+                        help='Encode the train set with VQGAN once and train on codebook ids. Requires --no_aug.')
+    parser.add_argument('--profile', action='store_true',
+                        help='Time data / H2D / forward / backward each epoch; write profile.json')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -185,6 +235,7 @@ def main(args):
     model = models_mage.__dict__[args.model](mask_ratio_mu=args.mask_ratio_mu, mask_ratio_std=args.mask_ratio_std,
                                              mask_ratio_min=args.mask_ratio_min, mask_ratio_max=args.mask_ratio_max,
                                              label_smoothing=args.label_smoothing,
+                                             linear_head=args.linear_head,
                                              vqgan_ckpt_path=vqgan_ckpt_path)
 
     model.to(device)
@@ -215,8 +266,48 @@ def main(args):
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
+    if getattr(args, 'cache_tokens', False):
+        if not args.no_aug:
+            print('cache_tokens requires --no_aug; skipping cache')
+        else:
+            cache_path = ''
+            if args.output_dir:
+                cache_path = os.path.join(args.output_dir, 'cached_train_tokens.pt')
+            tokens = None
+            if cache_path and os.path.isfile(cache_path):
+                loaded = torch.load(cache_path, map_location='cpu')
+                if (torch.is_tensor(loaded)
+                        and loaded.dim() == 2
+                        and loaded.size(0) == len(dataset_train)
+                        and loaded.size(1) == 256):
+                    tokens = loaded.long()
+                    print('reused cached tokens', tuple(tokens.shape),
+                          cache_path, flush=True)
+                else:
+                    print('cached tokens mismatch, recaching', flush=True)
+            if tokens is None:
+                print('caching VQGAN tokens once (no_aug, frozen list)')
+                t0 = time.time()
+                tokens = encode_dataset_tokens(
+                    model_without_ddp, dataset_train, device, args.batch_size)
+                print('cached tokens', tuple(tokens.shape),
+                      'in {:.1f}s'.format(time.time() - t0), flush=True)
+                if cache_path and misc.is_main_process():
+                    torch.save(tokens, cache_path)
+            from util.exp_data import TokenIndexDataset
+            dataset_train = TokenIndexDataset(tokens)
+            sampler_train, data_loader_train = rebuild_loader(dataset_train, args)
+
+    if args.output_dir and misc.is_main_process():
+        args_path = os.path.join(args.output_dir, 'args.json')
+        with open(args_path, 'w') as f:
+            json.dump(vars(args), f, indent=2, default=str)
+            f.write('\n')
+        print('wrote', args_path)
+
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    profile_sum = {}
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -226,19 +317,36 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 40 == 0 or epoch + 1 == args.epochs):
+        save_ckpt_freq = int(getattr(args, 'save_ckpt_freq', 40))
+        if args.output_dir and save_ckpt_freq > 0 and (
+                epoch % save_ckpt_freq == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        misc.save_model_last(
-            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-            loss_scaler=loss_scaler, epoch=epoch)
+        save_last_freq = max(int(getattr(args, 'save_last_freq', 1)), 1)
+        if args.output_dir and ((epoch + 1) % save_last_freq == 0 or epoch + 1 == args.epochs):
+            misc.save_model_last(
+                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                loss_scaler=loss_scaler, epoch=epoch)
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
+        if getattr(args, 'profile', False):
+            for key in ('data', 'h2d', 'forward', 'backward_optim', 'steps'):
+                if key in train_stats:
+                    profile_sum[key] = profile_sum.get(key, 0.0) + float(train_stats[key])
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
+                log_tb_freq = int(getattr(args, 'log_tb_freq', 1))
+                if log_tb_freq > 0 and (
+                        (epoch + 1) % log_tb_freq == 0 or epoch + 1 == args.epochs):
+                    log_writer.add_scalar('train_loss', train_stats['loss'], epoch)
+                    log_writer.add_scalar('lr', train_stats['lr'], epoch)
+                    if getattr(args, 'profile', False):
+                        for key in ('data', 'h2d', 'forward', 'backward_optim'):
+                            if key in train_stats:
+                                log_writer.add_scalar('profile/' + key, train_stats[key], epoch)
                 log_writer.flush()
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
@@ -246,6 +354,32 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if getattr(args, 'profile', False) and args.output_dir and misc.is_main_process():
+        steps = max(float(profile_sum.get('steps', 0.0)), 1.0)
+        compute = profile_sum.get('forward', 0.0) + profile_sum.get('backward_optim', 0.0)
+        dataish = profile_sum.get('data', 0.0) + profile_sum.get('h2d', 0.0)
+        notes = []
+        if not getattr(args, 'cache_tokens', False):
+            notes.append('enable --cache_tokens with --no_aug to skip per-step VQGAN encode')
+        if dataish > 0.25 * max(compute + dataish, 1e-6):
+            notes.append('data/H2D is a large slice; cached tokens plus pin_memory help more than num_workers on n<=100')
+        if compute > 0:
+            notes.append('remaining time is encoder/decoder/optimizer; batch size is the next lever')
+        payload = {
+            'seconds': profile_sum,
+            'ms_per_step': {
+                k: 1000.0 * profile_sum.get(k, 0.0) / steps
+                for k in ('data', 'h2d', 'forward', 'backward_optim')
+            },
+            'train_wall_s': total_time,
+            'cache_tokens': bool(getattr(args, 'cache_tokens', False)),
+            'notes': notes,
+        }
+        path = os.path.join(args.output_dir, 'profile.json')
+        with open(path, 'w') as f:
+            json.dump(payload, f, indent=2)
+            f.write('\n')
+        print('wrote', path, payload['ms_per_step'])
 
 
 if __name__ == '__main__':
