@@ -81,6 +81,66 @@ def token_match_frac(gen_to_train_errors):
     return float((err / 256.0).mean())
 
 
+def _pairwise_cosine_distance(pred_e, gt_e, eps=1e-8):
+    pred_n = np.linalg.norm(pred_e, axis=1)
+    gt_n = np.linalg.norm(gt_e, axis=1)
+    dot = np.sum(pred_e * gt_e, axis=1)
+    sim = dot / np.maximum(pred_n * gt_n, eps)
+    return 1.0 - sim
+
+
+def _pairwise_euclidean(pred_e, gt_e):
+    return np.linalg.norm(pred_e - gt_e, axis=1)
+
+
+def wrong_token_embed_stats(pred, gt, embeddings, seed=0, vocab_size=1024):
+    """Distances between wrong argmax ids and the correct id in word-embedding space.
+
+    ``embeddings`` is [vocab, dim] for the frozen token embeddings (first 1024
+    codebook rows). Random baseline draws a different wrong id for each error.
+    """
+    pred = np.asarray(pred).reshape(-1)
+    gt = np.asarray(gt).reshape(-1)
+    emb = np.asarray(embeddings, dtype=np.float64)
+    if pred.shape != gt.shape:
+        raise ValueError('pred/gt shape {} vs {}'.format(pred.shape, gt.shape))
+    if emb.ndim != 2 or emb.shape[0] < vocab_size:
+        raise ValueError('embeddings must be [>=1024, dim], got {}'.format(emb.shape))
+    n_total = int(pred.size)
+    wrong = pred != gt
+    n_wrong = int(wrong.sum())
+    out = {
+        'n_wrong': n_wrong,
+        'n_total': n_total,
+        'frac_wrong': float(n_wrong) / float(max(n_total, 1)),
+        'wrong_cosine_distance': None,
+        'wrong_euclidean': None,
+        'random_wrong_cosine_distance': None,
+        'random_wrong_euclidean': None,
+        'note': (
+            'Mean distance in token-embedding space between the wrong argmax '
+            'id and the correct id; random baseline is a uniformly drawn id '
+            'that is not the correct one.'
+        ),
+    }
+    if n_wrong == 0:
+        out['note'] = 'no wrong tokens; distances undefined'
+        return out
+    pred_e = emb[pred[wrong]]
+    gt_e = emb[gt[wrong]]
+    out['wrong_cosine_distance'] = float(_pairwise_cosine_distance(pred_e, gt_e).mean())
+    out['wrong_euclidean'] = float(_pairwise_euclidean(pred_e, gt_e).mean())
+    rng = np.random.RandomState(seed)
+    rand = rng.randint(0, vocab_size, size=n_wrong)
+    collide = rand == gt[wrong]
+    rand[collide] = (rand[collide] + 1) % vocab_size
+    rand_e = emb[rand]
+    out['random_wrong_cosine_distance'] = float(
+        _pairwise_cosine_distance(rand_e, gt_e).mean())
+    out['random_wrong_euclidean'] = float(_pairwise_euclidean(rand_e, gt_e).mean())
+    return out
+
+
 def pixel_mse_uint8(a, b):
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -89,6 +149,8 @@ def pixel_mse_uint8(a, b):
 
 def to_uint8_image(x):
     """Accept HWC uint8, or CHW/BCHW float in [0, 1]."""
+    if hasattr(x, 'detach'):
+        x = x.detach().cpu()
     arr = np.asarray(x)
     if arr.ndim == 4:
         arr = arr[0]
@@ -163,6 +225,7 @@ def build_metrics(
         grid_path,
         ref_dir=None,
         gen_dir=None,
+        wrong_token_embed=None,
         extra=None):
     gen = dict(generation_defaults(n))
     gen.update(generation or {})
@@ -181,10 +244,13 @@ def build_metrics(
             'argmax': bool(gen['argmax']),
             'num_images': int(gen['num_images']) if gen.get('num_images') is not None else None,
             'seed': int(gen.get('seed', 0)),
+            'schedule': gen.get('schedule', 'cosine'),
+            'uncover_per_step': gen.get('uncover_per_step'),
+            'remask': bool(gen.get('remask', True)),
             'repeats_allowed': True,
-            'note': (
+            'note': gen.get('note') or (
                 'Compare settings with these defaults unless the comparison '
-                'is about temperature / steps / argmax / count.'
+                'is about temperature / steps / argmax / count / schedule.'
             ),
         },
         'fid': {
@@ -203,6 +269,7 @@ def build_metrics(
         'coverage': coverage,
         'match_error': match_error,
         'oneshot_vs_self': oneshot_vs_self,
+        'wrong_token_embed': wrong_token_embed,
         'grid': grid_path,
     }
     if extra:

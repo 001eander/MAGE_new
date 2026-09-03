@@ -53,5 +53,6 @@
       "train/n01629819/images/n01629819_0.JPEG"
     ]
   },
+  "wrong_token_embed": null,
   "grid": "outputs/phase0_check/n2/grid.png"
 }
