@@ -151,7 +151,8 @@ class MaskedGenerativeEncoderViT(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,
                  mask_ratio_min=0.5, mask_ratio_max=1.0, mask_ratio_mu=0.55, mask_ratio_std=0.25,
-                 label_smoothing=0.1, vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
+                 label_smoothing=0.1, linear_head=False,
+                 vqgan_ckpt_path='vqgan_jax_strongaug.ckpt'):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -215,8 +216,15 @@ class MaskedGenerativeEncoderViT(nn.Module):
         # --------------------------------------------------------------------------
 
         # --------------------------------------------------------------------------
-        # MlmLayer
-        self.mlm_layer = MlmLayer(feat_emb_dim=decoder_embed_dim, word_emb_dim=embed_dim, vocab_size=vocab_size)
+        # Classification head: official tied dot-product MlmLayer, or a free linear head.
+        self.linear_head = bool(linear_head)
+        if self.linear_head:
+            self.mlm_layer = None
+            self.token_classifier = nn.Linear(decoder_embed_dim, self.codebook_size)
+        else:
+            self.mlm_layer = MlmLayer(
+                feat_emb_dim=decoder_embed_dim, word_emb_dim=embed_dim, vocab_size=vocab_size)
+            self.token_classifier = None
 
         self.norm_pix_loss = norm_pix_loss
 
@@ -256,13 +264,21 @@ class MaskedGenerativeEncoderViT(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward_encoder(self, x):
-        # tokenization
-        with torch.no_grad():
-            z_q, _, token_tuple = self.vqgan.encode(x)
-
-        _, _, token_indices = token_tuple
-        token_indices = token_indices.reshape(z_q.size(0), -1)
-        gt_indices = token_indices.clone().detach().long()
+        # Images go through frozen VQGAN. Cached codebook ids skip encode.
+        if x.dtype in (torch.int32, torch.int64):
+            token_indices = x.long()
+            if token_indices.dim() == 1:
+                token_indices = token_indices.unsqueeze(0)
+            token_indices = token_indices[:, :256].contiguous()
+            gt_indices = token_indices.clone()
+            device = token_indices.device
+        else:
+            with torch.no_grad():
+                z_q, _, token_tuple = self.vqgan.encode(x)
+            _, _, token_indices = token_tuple
+            token_indices = token_indices.reshape(z_q.size(0), -1)
+            gt_indices = token_indices.clone().detach().long()
+            device = x.device
 
         # masking
         bsz, seq_len = token_indices.size()
@@ -274,7 +290,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
 
         # it is possible that two elements of the noise is the same, so do a while loop to avoid it
         while True:
-            noise = torch.rand(bsz, seq_len, device=x.device)  # noise in [0, 1]
+            noise = torch.rand(bsz, seq_len, device=device)  # noise in [0, 1]
             sorted_noise, _ = torch.sort(noise, dim=1)  # ascend: small is remove, large is keep
             cutoff_drop = sorted_noise[:, num_dropped_tokens-1:num_dropped_tokens]
             cutoff_mask = sorted_noise[:, num_masked_tokens-1:num_masked_tokens]
@@ -289,10 +305,13 @@ class MaskedGenerativeEncoderViT(nn.Module):
         # print("Masekd num token:", torch.sum(token_indices == self.mask_token_label, dim=1))
 
         # concate class token
-        token_indices = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(device=token_indices.device), token_indices], dim=1)
+        token_indices = torch.cat(
+            [torch.zeros(token_indices.size(0), 1, device=device), token_indices], dim=1)
         token_indices[:, 0] = self.fake_class_label
-        token_drop_mask = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(), token_drop_mask], dim=1)
-        token_all_mask = torch.cat([torch.zeros(token_indices.size(0), 1).cuda(), token_all_mask], dim=1)
+        token_drop_mask = torch.cat(
+            [torch.zeros(token_indices.size(0), 1, device=device), token_drop_mask], dim=1)
+        token_all_mask = torch.cat(
+            [torch.zeros(token_indices.size(0), 1, device=device), token_all_mask], dim=1)
         token_indices = token_indices.long()
         # bert embedding
         input_embeddings = self.token_emb(token_indices)
@@ -337,6 +356,9 @@ class MaskedGenerativeEncoderViT(nn.Module):
             x = blk(x)
 
         x = self.decoder_norm(x)
+
+        if self.linear_head:
+            return self.token_classifier(x)
 
         word_embeddings = self.token_emb.word_embeddings.weight.data.detach()
         x = self.mlm_layer(x, word_embeddings)
