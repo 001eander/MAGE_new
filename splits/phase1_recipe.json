@@ -1,0 +1,83 @@
+{
+  "phase": 1,
+  "section": "4.1",
+  "n": [
+    1,
+    2,
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "combos": [
+    {
+      "exp_name": "dot_smooth",
+      "linear_head": false,
+      "label_smoothing": 0.1,
+      "head": "dot"
+    },
+    {
+      "exp_name": "dot_nosmooth",
+      "linear_head": false,
+      "label_smoothing": 0.0,
+      "head": "dot"
+    },
+    {
+      "exp_name": "lin_smooth",
+      "linear_head": true,
+      "label_smoothing": 0.1,
+      "head": "linear"
+    },
+    {
+      "exp_name": "lin_nosmooth",
+      "linear_head": true,
+      "label_smoothing": 0.0,
+      "head": "linear"
+    }
+  ],
+  "recipe": {
+    "model": "mage_vit_base_patch16",
+    "no_aug": true,
+    "mask_ratio_min": 0.5,
+    "mask_ratio_max": 1.0,
+    "mask_ratio_mu": 0.55,
+    "mask_ratio_std": 0.25,
+    "lr": 0.0001,
+    "min_lr": 1e-06,
+    "weight_decay": 0.05,
+    "warmup_epochs": 200,
+    "grad_clip": 3.0,
+    "seed": 0,
+    "save_last_freq": 200,
+    "save_ckpt_freq": 0,
+    "log_tb_freq": 10,
+    "num_workers": 0,
+    "cache_tokens": true,
+    "profile": true,
+    "version": "v2",
+    "archive_v1": "outputs/_archive/phase1_v1",
+    "epochs_by_n": {
+      "1": 8000,
+      "2": 8000,
+      "10": 8000,
+      "100": 8000,
+      "1000": 8000,
+      "10000": 8000
+    },
+    "batch_size_by_n": {
+      "1": 1,
+      "2": 2,
+      "10": 10,
+      "100": 20,
+      "1000": 50,
+      "10000": 100
+    },
+    "data_path": "data/tiny-imagenet-200",
+    "vqgan_ckpt": "vqgan_jax_strongaug.ckpt",
+    "recon_dir": "outputs/_ref/tiny_val256_vqgan_recon",
+    "ref_metrics": "outputs/_ref/metrics.json",
+    "star50000": "not run; phase-1 slice is Tiny-ImageNet n=1,2,10,100,1000,10000",
+    "note": "Shared across the four cells except classification head and label smoothing. Official mask 0.5-1 and 50% encoder drop stay as in the paper. --no_aug so train tokens equal eval tokens. Absolute --lr, not --blr. v2: 8000 epochs for every n (equal visits/image), warmup 200 (2.5%), min_lr 1e-6 so cosine does not die, --cache_tokens skips per-step VQGAN encode. Batch grows with n (50 at n=1000, 100 at n=10000) so the dataset stays divisible; lr does not scale with batch. Tiny 64\u2192256 FID is not the paper ImageNet-256 number. v1 (2000/400 epochs, min_lr 0) is in outputs/_archive/phase1_v1."
+  },
+  "job_array": "scripts/phase1_fill_pack.py packs 1-24"
+}
