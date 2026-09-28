@@ -11,6 +11,6 @@
 
 set -euo pipefail
 export SCHEDULE=uncover1
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 cd "${ROOT}"
 exec bash "${ROOT}/scripts/phase1_eval.sh"

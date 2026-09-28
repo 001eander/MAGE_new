@@ -10,6 +10,6 @@
 # Eval-only. Set INDEX=1..24 in the submitting shell.
 
 set -euo pipefail
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 cd "${ROOT}"
 exec bash "${ROOT}/scripts/phase1_eval.sh"

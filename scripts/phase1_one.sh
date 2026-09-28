@@ -12,6 +12,6 @@
 
 set -euo pipefail
 export PYTHONUNBUFFERED=1
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 cd "${ROOT}"
 exec bash "${ROOT}/scripts/phase1_cell.sh"

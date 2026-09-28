@@ -6,7 +6,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 PYTHON="/nfsshare/home/taotang/miniforge3/envs/mage/bin/python"
 
 cd "${ROOT}"

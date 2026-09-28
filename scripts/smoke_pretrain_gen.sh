@@ -15,7 +15,7 @@ set -euo pipefail
 # Keep ~/.local site-packages from shadowing the conda env (e.g. numpy).
 export PYTHONNOUSERSITE=1
 
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 PYTHON="/nfsshare/home/taotang/miniforge3/envs/mage/bin/python"
 SRC="${ROOT}/data/tiny-imagenet-200/train/n01443537/images/n01443537_0.JPEG"
 SMOKE="${ROOT}/data/smoke"

@@ -15,7 +15,7 @@
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 PYTHON="/nfsshare/home/taotang/miniforge3/envs/mage/bin/python"
 
 N="${N:-2}"

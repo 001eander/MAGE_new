@@ -11,7 +11,7 @@
 # packing several cells onto one multi-GPU job.
 
 set -euo pipefail
-ROOT="/nfsshare/home/taotang/cursor/mage"
+ROOT="/nfsshare/home/taotang/GenModels/MAGE"
 cd "${ROOT}"
 if [[ -n "${LSB_JOBINDEX:-}" ]]; then
     export INDEX="${LSB_JOBINDEX}"
