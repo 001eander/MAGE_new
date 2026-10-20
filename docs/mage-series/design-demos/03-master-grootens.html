@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MAGE 主模型逐行讲解 — MAGE 源码逐读 · 第 1 篇 / 共 5 篇</title>
+<style>
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:#FFFFFF;color:#191919;overflow-wrap:break-word;
+ font:16px/1.78 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+.wrap{max-width:880px;margin:0 auto;padding:0 28px 72px}
+h1,h2,h3,h4{margin:0;font-weight:700;
+ font-family:Georgia,"Times New Roman","Songti SC","Noto Serif CJK SC","Source Han Serif SC","SimSun",serif}
+p{margin:14px 0}
+a{color:#0B4F9E;text-decoration:none;border-bottom:1px solid #C8D4E6}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono","Liberation Mono",monospace;
+ font-size:.9em;background:#F3F3EF;padding:1px 4px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono","Liberation Mono",monospace}
+
+/* entity colours: one colour per model entity, used everywhere */
+.t-tok{color:#0B4F9E}.t-mask{color:#9C3B0B}.t-cls{color:#116B43}.t-enc{color:#2B2F8F}
+.t-dec{color:#0E5F70}.t-loss{color:#7A1B4F}.t-ext{color:#4C5560}.t-ink{color:#1A1A1A}
+.t-leg{color:#6B6B6B;border-bottom:1px dotted #B0B0B0}
+.t-kw{color:#666666}
+.s-tok,.s-keep{background:#0B4F9E}.s-mask,.s-drop{background:#9C3B0B}
+.s-cls{background:#116B43}.s-enc{background:#2B2F8F}.s-dec{background:#0E5F70}
+.s-loss{background:#7A1B4F}.s-ext{background:#4C5560}.s-leg{background:#6B6B6B}.s-ink{background:#1A1A1A}
+.s-maskonly,.s-hatch{background-color:#E3D2C4;
+ background-image:repeating-linear-gradient(45deg,#9C3B0B 0 3px,#E3D2C4 3px 6px)}
+.sw{display:inline-block;width:9px;height:9px;margin-right:7px;vertical-align:1px}
+.swlg{width:14px;height:14px;vertical-align:0}
+
+/* masthead */
+.mast{border-top:4px solid #1A1A1A;padding-top:14px}
+.kicker{margin:0 0 12px;font-size:12px;letter-spacing:.16em;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.epish{margin:0 0 20px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.epi{display:inline-block;border:1px solid #1A1A1A;padding:2px 10px;font-size:13px;
+ font-weight:700;letter-spacing:.06em;color:#1A1A1A}
+.episub{margin-left:10px;font-size:12px;color:#4C5560}
+h1{font-size:42px;line-height:1.16;letter-spacing:-.01em;margin:0 0 14px}
+.lead{margin:0 0 6px;color:#4C5560}
+.meta{margin:0 0 24px;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.roadmap{width:100%;border-collapse:collapse;margin:0 0 44px;font-size:14px}
+.roadmap td{padding:7px 10px 7px 0;border-top:1px solid #E4E4E0}
+.roadmap tr.cur td{border-top:2px solid #1A1A1A;background:#F5F5F2;font-weight:700}
+.rn{width:44px;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.rl{width:auto}
+.rs{width:56px;text-align:right;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.roadmap tr.cur .rs{color:#1A1A1A}
+
+/* colour key plate */
+.plate{border-top:2px solid #1A1A1A;padding-top:12px;margin:0 0 46px}
+.platelbl{margin:0 0 12px;font-size:12px;letter-spacing:.16em;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.rastcap{margin:0 0 10px;font-size:13px;color:#4C5560}
+.raster{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 10px}
+.raster td{height:15px;padding:0;font-size:0;line-height:0;border:1px solid #FFFFFF}
+.raster td.ridx{width:26px;border:0;font-size:12px;line-height:15px;color:#6B6B6B;text-align:left;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.raster td.c-keep{background:#0B4F9E}
+.raster td.c-drop{background:#9C3B0B}
+.raster td.c-maskonly{background-color:#E3D2C4;
+ background-image:repeating-linear-gradient(45deg,#9C3B0B 0 3px,#E3D2C4 3px 6px)}
+.raster td.c-empty{background:#FFFFFF}
+.rastkey{margin:0 0 24px;font-size:13px;color:#1A1A1A}
+.bars{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 12px}
+.bars td{padding:5px 0}
+.barlbl{margin:0 0 3px;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.bn{display:inline-block;width:40px;color:#1A1A1A}
+.bar{display:block;height:14px;background:#EDEDEA;font-size:0;line-height:0}
+.bar span{display:inline-block;height:14px;vertical-align:top}
+.b-drop{background:#9C3B0B}
+.b-keep{background:#0B4F9E}
+.b-cls{background:#116B43}
+.b-maskonly{background-color:#E3D2C4;
+ background-image:repeating-linear-gradient(45deg,#9C3B0B 0 3px,#E3D2C4 3px 6px)}
+.barsnote{margin:0 0 26px;font-size:13px;color:#4C5560}
+.legend{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 14px}
+.legend td{padding:9px 10px 9px 0;border-top:1px solid #E4E4E0;vertical-align:top}
+.lsw{width:30px}
+.lname{width:104px;font-size:14px;font-weight:700}
+.lmean{width:auto;font-size:13px;color:#3A3A3A}
+.lterms{display:block;font-size:12px;color:#4C5560;margin-bottom:3px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.legendnote{margin:0;font-size:13px;color:#4C5560;border-top:2px solid #1A1A1A;padding-top:10px}
+/* table of contents */
+.toc{border-top:2px solid #1A1A1A;padding-top:12px;margin:0 0 10px}
+.toc table{width:100%;border-collapse:collapse;table-layout:fixed}
+.toc td{padding:6px 10px 6px 0;border-top:1px solid #E4E4E0;font-size:15px;vertical-align:baseline}
+.tn{width:40px;font-size:12px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.tt{width:auto}
+.tl{width:96px;text-align:right;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+
+/* sections */
+.sec{border-top:2px solid #1A1A1A;margin:52px 0 0;padding-top:16px}
+.sechead{width:100%;border-collapse:collapse;table-layout:fixed}
+.sechead td{vertical-align:top;padding:0}
+.sno{width:64px;font-size:26px;font-weight:700;line-height:1.15;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.stt h2{font-size:26px;line-height:1.24}
+.smeta{margin:6px 0 0;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.h4{margin:28px 0 0;font-size:15px;font-weight:700;font-family:inherit}
+.h3{margin:38px 0 0;font-size:21px}
+ul{padding:0;margin:16px 0;list-style:none}
+li{margin:0 0 12px}
+.mk{display:inline-block;width:8px;height:8px;margin-right:10px;vertical-align:2px}
+.mk.hole{width:6px;height:6px;background:transparent;border:1px solid #8A8A8A;vertical-align:3px}
+.kpt{width:100%;border-collapse:collapse;table-layout:fixed;margin:16px 0 0}
+.kpt td{padding:13px 10px 13px 0;border-top:1px solid #E4E4E0;vertical-align:top}
+.kn{width:44px;font-size:13px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.kt{font-size:16px;line-height:1.7}
+
+/* code */
+.code{margin:20px 0;background:#F5F5F2;border-top:1px solid #DCDCD7;border-bottom:1px solid #DCDCD7}
+.codebar{margin:0;padding:9px 16px 0;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.code pre{margin:0;padding:8px 16px 14px;font-size:13px;line-height:1.62;color:#1A1A1A;
+ white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.flow{margin:20px 0;background:#F5F5F2;border-top:1px solid #DCDCD7;border-bottom:1px solid #DCDCD7;
+ padding:12px 16px;font-size:13px;line-height:1.9;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.note{margin:20px 0;background:#FAFAF7;padding:12px 16px 14px;border-top:3px solid #2B2F8F}
+.note p{margin:0}
+.note .lbl{margin:0 0 6px;font-size:12px;letter-spacing:.12em;color:#2B2F8F;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.n-leg{border-top-color:#6B6B6B}
+.n-leg .lbl{color:#6B6B6B}
+.tip{margin:18px 0 0;padding-top:10px;border-top:1px solid #E4E4E0;font-size:13px;color:#4C5560}
+
+/* figures */
+.fig{margin:26px 0 30px}
+.figcap{margin:0 0 6px;padding-top:6px;border-top:1px solid #1A1A1A;font-size:13px;color:#1A1A1A}
+.fno{display:inline-block;min-width:60px;font-size:12px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.fig img{display:block;width:100%;height:auto;border:1px solid #E4E4E0}
+.figmeta{margin:6px 0 0;text-align:right;font-size:12px;color:#6B6B6B;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+
+.foot{border-top:4px solid #1A1A1A;margin:64px 0 0;padding-top:14px}
+.fl{margin:0 0 4px;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+.fr{margin:0;font-size:12px;color:#4C5560;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace}
+
+@media (max-width:640px){
+ .wrap{padding:0 16px 52px}
+ h1{font-size:30px}
+ .stt h2{font-size:21px}
+ .sno{width:48px;font-size:20px}
+ .h3{font-size:18px}
+ .code pre{font-size:12px}
+ .flow{font-size:12px}
+ .lname{width:78px}
+ .tn{width:34px}
+ .tl{width:78px}
+ .sec{margin-top:44px}
+}
+</style>
+
+</head><body><div class="wrap">
+<header class="mast">
+<p class="kicker">MAGE 源码逐读 · SOURCE READING</p>
+<p class="epish"><span class="epi">第 1 篇 / 共 5 篇</span><span class="episub">models_mage.py · 主模型</span></p>
+<h1>MAGE 主模型逐行讲解</h1>
+<p class="lead">代码文件：models_mage.py（MAGE 预训练与生成的核心模型）</p>
+<p class="meta">仓库：LTH14/mage · 实验分支：001eander/MAGE_new  |  生成日期：2026-09-29</p>
+<table class="roadmap" role="presentation">
+<tr class="cur"><td class="rn">01</td><td class="rl">主模型 models_mage.py</td><td class="rs">本篇</td></tr>
+<tr><td class="rn">02</td><td class="rl">下游分类 models_vit_mage.py</td><td class="rs">待写</td></tr>
+<tr><td class="rn">03</td><td class="rl">预训练引擎 engine_pretrain.py</td><td class="rs">待写</td></tr>
+<tr><td class="rn">04</td><td class="rl">微调与线性探测 engine_finetune.py</td><td class="rs">待写</td></tr>
+<tr><td class="rn">05</td><td class="rl">入口脚本 main_*.py</td><td class="rs">待写</td></tr>
+</table>
+</header>
+<section class="plate">
+<p class="platelbl">索引 · 色彩编码 / COLOR KEY</p>
+<p class="rastcap">256 个位置（16 × 16 图块，行主序）。示意值 <span class="t-mask">mask_rate = 0.55</span> → 遮盖 141，丢弃 128，保留真实编号 115。</p>
+<table class="raster" role="presentation"><tr><td class="ridx">00</td><td class="c-drop" title="位置 0：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 1：编号保留"></td><td class="c-keep" title="位置 2：编号保留"></td><td class="c-drop" title="位置 3：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 4：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 5：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 6：编号保留"></td><td class="c-keep" title="位置 7：编号保留"></td><td class="c-drop" title="位置 8：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 9：编号保留"></td><td class="c-drop" title="位置 10：丢弃 token_drop_mask"></td><td class="c-maskonly" title="位置 11：只被遮盖 token_all_mask"></td><td class="c-keep" title="位置 12：编号保留"></td><td class="c-keep" title="位置 13：编号保留"></td><td class="c-keep" title="位置 14：编号保留"></td><td class="c-keep" title="位置 15：编号保留"></td></tr><tr><td class="ridx">01</td><td class="c-keep" title="位置 16：编号保留"></td><td class="c-drop" title="位置 17：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 18：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 19：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 20：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 21：编号保留"></td><td class="c-maskonly" title="位置 22：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 23：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 24：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 25：编号保留"></td><td class="c-keep" title="位置 26：编号保留"></td><td class="c-keep" title="位置 27：编号保留"></td><td class="c-keep" title="位置 28：编号保留"></td><td class="c-keep" title="位置 29：编号保留"></td><td class="c-keep" title="位置 30：编号保留"></td><td class="c-drop" title="位置 31：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">02</td><td class="c-drop" title="位置 32：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 33：编号保留"></td><td class="c-keep" title="位置 34：编号保留"></td><td class="c-drop" title="位置 35：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 36：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 37：编号保留"></td><td class="c-keep" title="位置 38：编号保留"></td><td class="c-drop" title="位置 39：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 40：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 41：编号保留"></td><td class="c-maskonly" title="位置 42：只被遮盖 token_all_mask"></td><td class="c-keep" title="位置 43：编号保留"></td><td class="c-drop" title="位置 44：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 45：编号保留"></td><td class="c-drop" title="位置 46：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 47：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">03</td><td class="c-drop" title="位置 48：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 49：编号保留"></td><td class="c-drop" title="位置 50：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 51：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 52：编号保留"></td><td class="c-drop" title="位置 53：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 54：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 55：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 56：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 57：编号保留"></td><td class="c-keep" title="位置 58：编号保留"></td><td class="c-drop" title="位置 59：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 60：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 61：编号保留"></td><td class="c-keep" title="位置 62：编号保留"></td><td class="c-drop" title="位置 63：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">04</td><td class="c-keep" title="位置 64：编号保留"></td><td class="c-keep" title="位置 65：编号保留"></td><td class="c-drop" title="位置 66：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 67：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 68：编号保留"></td><td class="c-keep" title="位置 69：编号保留"></td><td class="c-drop" title="位置 70：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 71：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 72：编号保留"></td><td class="c-keep" title="位置 73：编号保留"></td><td class="c-keep" title="位置 74：编号保留"></td><td class="c-keep" title="位置 75：编号保留"></td><td class="c-maskonly" title="位置 76：只被遮盖 token_all_mask"></td><td class="c-keep" title="位置 77：编号保留"></td><td class="c-drop" title="位置 78：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 79：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">05</td><td class="c-keep" title="位置 80：编号保留"></td><td class="c-drop" title="位置 81：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 82：编号保留"></td><td class="c-drop" title="位置 83：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 84：编号保留"></td><td class="c-maskonly" title="位置 85：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 86：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 87：编号保留"></td><td class="c-drop" title="位置 88：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 89：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 90：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 91：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 92：编号保留"></td><td class="c-keep" title="位置 93：编号保留"></td><td class="c-drop" title="位置 94：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 95：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">06</td><td class="c-drop" title="位置 96：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 97：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 98：编号保留"></td><td class="c-keep" title="位置 99：编号保留"></td><td class="c-keep" title="位置 100：编号保留"></td><td class="c-drop" title="位置 101：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 102：丢弃 token_drop_mask"></td><td class="c-maskonly" title="位置 103：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 104：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 105：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 106：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 107：编号保留"></td><td class="c-drop" title="位置 108：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 109：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 110：编号保留"></td><td class="c-drop" title="位置 111：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">07</td><td class="c-drop" title="位置 112：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 113：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 114：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 115：编号保留"></td><td class="c-drop" title="位置 116：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 117：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 118：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 119：编号保留"></td><td class="c-drop" title="位置 120：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 121：编号保留"></td><td class="c-keep" title="位置 122：编号保留"></td><td class="c-drop" title="位置 123：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 124：编号保留"></td><td class="c-drop" title="位置 125：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 126：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 127：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">08</td><td class="c-keep" title="位置 128：编号保留"></td><td class="c-drop" title="位置 129：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 130：编号保留"></td><td class="c-drop" title="位置 131：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 132：编号保留"></td><td class="c-drop" title="位置 133：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 134：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 135：编号保留"></td><td class="c-maskonly" title="位置 136：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 137：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 138：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 139：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 140：编号保留"></td><td class="c-drop" title="位置 141：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 142：编号保留"></td><td class="c-drop" title="位置 143：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">09</td><td class="c-keep" title="位置 144：编号保留"></td><td class="c-maskonly" title="位置 145：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 146：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 147：编号保留"></td><td class="c-drop" title="位置 148：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 149：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 150：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 151：编号保留"></td><td class="c-drop" title="位置 152：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 153：编号保留"></td><td class="c-keep" title="位置 154：编号保留"></td><td class="c-drop" title="位置 155：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 156：编号保留"></td><td class="c-keep" title="位置 157：编号保留"></td><td class="c-keep" title="位置 158：编号保留"></td><td class="c-keep" title="位置 159：编号保留"></td></tr><tr><td class="ridx">10</td><td class="c-keep" title="位置 160：编号保留"></td><td class="c-maskonly" title="位置 161：只被遮盖 token_all_mask"></td><td class="c-keep" title="位置 162：编号保留"></td><td class="c-keep" title="位置 163：编号保留"></td><td class="c-maskonly" title="位置 164：只被遮盖 token_all_mask"></td><td class="c-keep" title="位置 165：编号保留"></td><td class="c-maskonly" title="位置 166：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 167：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 168：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 169：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 170：编号保留"></td><td class="c-drop" title="位置 171：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 172：编号保留"></td><td class="c-keep" title="位置 173：编号保留"></td><td class="c-keep" title="位置 174：编号保留"></td><td class="c-drop" title="位置 175：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">11</td><td class="c-keep" title="位置 176：编号保留"></td><td class="c-drop" title="位置 177：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 178：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 179：编号保留"></td><td class="c-drop" title="位置 180：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 181：编号保留"></td><td class="c-drop" title="位置 182：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 183：编号保留"></td><td class="c-keep" title="位置 184：编号保留"></td><td class="c-drop" title="位置 185：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 186：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 187：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 188：编号保留"></td><td class="c-drop" title="位置 189：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 190：编号保留"></td><td class="c-drop" title="位置 191：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">12</td><td class="c-keep" title="位置 192：编号保留"></td><td class="c-keep" title="位置 193：编号保留"></td><td class="c-drop" title="位置 194：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 195：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 196：编号保留"></td><td class="c-keep" title="位置 197：编号保留"></td><td class="c-keep" title="位置 198：编号保留"></td><td class="c-drop" title="位置 199：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 200：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 201：编号保留"></td><td class="c-drop" title="位置 202：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 203：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 204：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 205：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 206：编号保留"></td><td class="c-keep" title="位置 207：编号保留"></td></tr><tr><td class="ridx">13</td><td class="c-drop" title="位置 208：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 209：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 210：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 211：编号保留"></td><td class="c-keep" title="位置 212：编号保留"></td><td class="c-drop" title="位置 213：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 214：编号保留"></td><td class="c-drop" title="位置 215：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 216：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 217：编号保留"></td><td class="c-keep" title="位置 218：编号保留"></td><td class="c-maskonly" title="位置 219：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 220：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 221：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 222：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 223：丢弃 token_drop_mask"></td></tr><tr><td class="ridx">14</td><td class="c-keep" title="位置 224：编号保留"></td><td class="c-keep" title="位置 225：编号保留"></td><td class="c-drop" title="位置 226：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 227：丢弃 token_drop_mask"></td><td class="c-maskonly" title="位置 228：只被遮盖 token_all_mask"></td><td class="c-drop" title="位置 229：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 230：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 231：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 232：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 233：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 234：编号保留"></td><td class="c-drop" title="位置 235：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 236：编号保留"></td><td class="c-keep" title="位置 237：编号保留"></td><td class="c-drop" title="位置 238：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 239：编号保留"></td></tr><tr><td class="ridx">15</td><td class="c-keep" title="位置 240：编号保留"></td><td class="c-keep" title="位置 241：编号保留"></td><td class="c-drop" title="位置 242：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 243：编号保留"></td><td class="c-drop" title="位置 244：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 245：编号保留"></td><td class="c-keep" title="位置 246：编号保留"></td><td class="c-drop" title="位置 247：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 248：编号保留"></td><td class="c-keep" title="位置 249：编号保留"></td><td class="c-drop" title="位置 250：丢弃 token_drop_mask"></td><td class="c-drop" title="位置 251：丢弃 token_drop_mask"></td><td class="c-keep" title="位置 252：编号保留"></td><td class="c-keep" title="位置 253：编号保留"></td><td class="c-keep" title="位置 254：编号保留"></td><td class="c-keep" title="位置 255：编号保留"></td></tr></table>
+<p class="rastkey"><span class="sw s-keep"></span>保留的真实编号 115　<span class="sw sw-h s-maskonly"></span>只被遮盖 13　<span class="sw s-drop"></span>被丢弃 128　<span class="sw s-cls"></span>类槽 1</p>
+<table class="bars" role="presentation">
+<tr><td><p class="barlbl"><span class="bn">256</span>位置总数</p><span class="bar"></span></td></tr>
+<tr><td><p class="barlbl"><span class="bn">141</span>遮盖 token_all_mask</p><span class="bar"><span class="b-drop" style="width:50.000%"></span><span class="b-maskonly" style="width:5.078%"></span></span></td></tr>
+<tr><td><p class="barlbl"><span class="bn">128</span>丢弃 token_drop_mask</p><span class="bar"><span class="b-drop" style="width:50.000%"></span></span></td></tr>
+<tr><td><p class="barlbl"><span class="bn">129</span>编码器输入（类槽 + 保留）</p><span class="bar"><span class="b-cls" style="width:0.389%"></span><span class="b-keep" style="width:44.747%"></span><span class="b-maskonly" style="width:5.058%"></span></span></td></tr>
+<tr><td><p class="barlbl"><span class="bn">257</span>解码器输入（回填后）</p><span class="bar"><span class="b-cls" style="width:0.389%"></span><span class="b-drop" style="width:49.805%"></span><span class="b-maskonly" style="width:5.058%"></span><span class="b-keep" style="width:44.747%"></span></span></td></tr>
+</table>
+<p class="barsnote">丢弃集合是遮盖集合的子集：<span class="t-mask">token_drop_mask ⊂ token_all_mask</span>（128 ⊂ 141）。编码器看不到的 128 个位置里，有 13 个只是被遮盖、仍留在编码器输入中。</p>
+<table class="legend" role="presentation">
+<tr><td class="lsw"><span class="sw swlg s-tok"></span></td><td class="lname t-tok">编号</td><td class="lmean"><span class="lterms">token_indices · codebook_size · gt_indices · logits</span>被预测的对象。全部推理都在编号空间里发生，像素不进 Transformer。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-drop"></span></td><td class="lname t-drop">丢弃</td><td class="lmean"><span class="lterms">token_drop_mask · token_keep_mask</span>编码器固定丢掉的 128 个位置（实心方块）。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-hatch"></span></td><td class="lname t-maskonly">遮盖</td><td class="lmean"><span class="lterms">token_all_mask · mask_token_label = 2024</span>替换成 mask 编号的位置，是丢弃集合的超集（斜线方块）。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-cls"></span></td><td class="lname t-cls">类槽</td><td class="lmean"><span class="lterms">cls_token · fake_class_label = 1100</span>序列第 0 位，永不遮、永不丢；解码器用它填被遮位置。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-enc"></span></td><td class="lname t-enc">编码器</td><td class="lmean"><span class="lterms">Attention · Block · self.blocks</span>12（Large 24）层 Block，只看类槽加保留的 128 个位置。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-dec"></span></td><td class="lname t-dec">解码器</td><td class="lmean"><span class="lterms">decoder_embed · decoder_blocks</span>8 层，把 129 个输出回填到 257 个位置后重算。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-loss"></span></td><td class="lname t-loss">损失</td><td class="lmean"><span class="lterms">criterion · forward_loss</span>只对遮盖位置求平均，其余位置不贡献梯度。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-ext"></span></td><td class="lname t-ext">外部与冻结</td><td class="lmean"><span class="lterms">timm · scipy · VQModel</span>外部件与冻结的 VQGAN，不参与参数更新。</td></tr>
+<tr><td class="lsw"><span class="sw swlg s-leg"></span></td><td class="lname t-leg">遗留结构</td><td class="lmean"><span class="lterms">patch_embed · pos_embed · mask_token</span>灰点下划线：从 MAE 骨架继承、前向里不被调用的结构。</td></tr>
+</table>
+<p class="legendnote">读法：同一颜色永远指同一件事——正文关键词、代码高亮、小节编号、清单方点、图注索引共用这套编码。扫色块即可定位「这一段在讲谁」。清单前的空心方点表示该条没有单一实体归属。</p>
+</section>
+<nav class="toc"><p class="platelbl">目录 · 16 节</p><table role="presentation">
+<tr><td class="tn t-tok">01</td><td class="tt"><a href="#overview">模型概览：它在做什么</a></td><td class="tl">—</td></tr>
+<tr><td class="tn t-ext">02</td><td class="tt"><a href="#imports">依赖与导入（1–13 行）</a></td><td class="tl">1–13 行</td></tr>
+<tr><td class="tn t-enc">03</td><td class="tt"><a href="#attention">Attention（16–44 行）</a></td><td class="tl">16–44 行</td></tr>
+<tr><td class="tn t-enc">04</td><td class="tt"><a href="#block">Block（47–69 行）</a></td><td class="tl">47–69 行</td></tr>
+<tr><td class="tn t-loss">05</td><td class="tt"><a href="#lsce">LabelSmoothingCrossEntropy（72–87 行）</a></td><td class="tl">72–87 行</td></tr>
+<tr><td class="tn t-tok">06</td><td class="tt"><a href="#bert">BertEmbeddings（90–124 行）</a></td><td class="tl">90–124 行</td></tr>
+<tr><td class="tn t-tok">07</td><td class="tt"><a href="#mlm">MlmLayer：点积分类头（127–143 行）</a></td><td class="tl">127–143 行</td></tr>
+<tr><td class="tn t-ink">08</td><td class="tt"><a href="#init">MaskedGenerativeEncoderViT.__init__（146–233 行）</a></td><td class="tl">146–233 行</td></tr>
+<tr><td class="tn t-ink">09</td><td class="tt"><a href="#iw">initialize_weights / _init_weights（235–264 行）</a></td><td class="tl">235–264 行</td></tr>
+<tr><td class="tn t-enc">10</td><td class="tt"><a href="#fenc">forward_encoder（266–333 行）</a></td><td class="tl">266–333 行</td></tr>
+<tr><td class="tn t-dec">11</td><td class="tt"><a href="#fdec">forward_decoder（335–367 行）</a></td><td class="tl">335–367 行</td></tr>
+<tr><td class="tn t-loss">12</td><td class="tt"><a href="#floss">forward_loss（369–375 行）</a></td><td class="tl">369–375 行</td></tr>
+<tr><td class="tn t-ink">13</td><td class="tt"><a href="#ffwd">forward（377–381 行）</a></td><td class="tl">377–381 行</td></tr>
+<tr><td class="tn t-ink">14</td><td class="tt"><a href="#factory">两个工厂函数（384–397 行）</a></td><td class="tl">384–397 行</td></tr>
+<tr><td class="tn t-ink">15</td><td class="tt"><a href="#keypoints">这一篇的要点</a></td><td class="tl">—</td></tr>
+<tr><td class="tn t-ink">16</td><td class="tt"><a href="#diagrams">架构图（mermaid）</a></td><td class="tl">—</td></tr>
+</table></nav>
+<main>
+<section class="sec" id="overview">
+<table class="sechead" role="presentation"><tr><td class="sno t-tok">01</td><td class="stt"><h2>模型概览：它在做什么</h2><p class="smeta"><span class="sw s-tok"></span>编号</p></td></tr></table>
+<p>整张图先被冻结的 VQGAN 编码成 16×16=256 个编号，编号取值范围 <code class="t-ink">0..1023</code>。模型在这 256 个编号上做类似 BERT 的掩码预测：盖住一部分位置，让编码器只看剩下的一半，再让解码器把被盖住的位置猜回原来的编号。像素层面它一行都不碰，全部在编号空间里做。</p>
+<p class="flow"><span class="t-ext">图像</span> →（<span class="t-ext">VQGAN</span>）→ <span class="t-ink">256 编号</span> → 随机<span class="t-mask">遮盖</span> → <span class="t-enc">编码器</span> → <span class="t-dec">解码器</span> → 每个位置的 1024 类 <span class="t-tok">logits</span> → <span class="t-loss">交叉熵</span></p>
+</section>
+<section class="sec" id="imports">
+<table class="sechead" role="presentation"><tr><td class="sno t-ext">02</td><td class="stt"><h2>依赖与导入</h2><p class="smeta"><span class="sw s-ext"></span>文件行 1–13 行　·　外部依赖 / 冻结</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-ext"></span>代码 1/1　·　行 1–13　·　外部依赖 / 冻结</p>
+<pre><span class="t-kw">from</span> timm.models.v<span class="t-kw">is</span>ion_trans<span class="t-kw">for</span>mer <span class="t-kw">import</span> <span class="t-kw">PatchEmbed</span>, <span class="t-kw">DropPath</span>, <span class="t-kw">Mlp</span>
+<span class="t-kw">from</span> util.<span class="t-kw">pos_embed</span> <span class="t-kw">import</span> get_2d_s<span class="t-kw">in</span>cos_<span class="t-kw">pos_embed</span>
+<span class="t-kw">from</span> tam<span class="t-kw">in</span>g.models.<span class="t-kw">vqgan</span> <span class="t-kw">import</span> <span class="t-kw">VQModel</span>
+<span class="t-kw">from</span> omegaconf <span class="t-kw">import</span> <span class="t-kw">OmegaConf</span>
+<span class="t-kw">import</span> numpy <span class="t-kw">as</span> np
+<span class="t-kw">import</span> scipy.<span class="t-kw">stats</span> <span class="t-kw">as</span> <span class="t-kw">stats</span></pre></div>
+<ul>
+<li><span class="mk s-ext"></span>第 6 行从 timm 借了三个现成件：<code class="t-ext">PatchEmbed</code>（16×16 卷积切块）、<code class="t-enc">DropPath</code>（随机深度）、<code class="t-enc">Mlp</code>（Transformer 里的前馈层）。</li>
+<li><span class="mk s-leg"></span>第 8 行是正弦余弦位置编码，<code class="t-leg">util/pos_embed.py</code> 里生成。</li>
+<li><span class="mk s-ext"></span>第 10–11 行引入本地 VQGAN，配置用 OmegaConf 从 <code class="t-ext">config/vqgan.yaml</code> 读。</li>
+<li><span class="mk s-mask"></span>第 13 行 <code class="t-mask">scipy.stats</code> 用来抽截断正态的遮挡比例，这是 MAGE 相对 MAE 的关键变动之一。</li>
+</ul>
+</section>
+<section class="sec" id="attention">
+<table class="sechead" role="presentation"><tr><td class="sno t-enc">03</td><td class="stt"><h2>Attention</h2><p class="smeta"><span class="sw s-enc"></span>文件行 16–44 行　·　编码器</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-enc"></span>代码 1/2　·　行 16–44　·　编码器</p>
+<pre><span class="t-kw">def</span> __<span class="t-kw">in</span>it__(self, dim, <span class="t-kw">num_heads</span>=8, <span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>=<span class="t-kw">False</span>, <span class="t-kw">qk_scale</span>=<span class="t-kw">None</span>, <span class="t-kw">attn_drop</span>=0., <span class="t-kw">proj_drop</span>=0.):
+    self.<span class="t-kw">num_heads</span> = <span class="t-kw">num_heads</span>
+    <span class="t-kw">head_dim</span> = dim // <span class="t-kw">num_heads</span>
+    self.<span class="t-kw">scale</span> = <span class="t-kw">qk_scale</span> <span class="t-kw">or</span> <span class="t-kw">head_dim</span> ** -0.5
+    self.<span class="t-kw">qkv</span> = nn.L<span class="t-kw">in</span>ear(dim, dim * 3, bi<span class="t-kw">as</span>=<span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>)
+    self.<span class="t-kw">attn_drop</span> = nn.Dropout(<span class="t-kw">attn_drop</span>)
+    self.<span class="t-kw">proj</span> = nn.L<span class="t-kw">in</span>ear(dim, dim)
+    self.<span class="t-kw">proj_drop</span> = nn.Dropout(<span class="t-kw">proj_drop</span>)</pre></div>
+<ul>
+<li><span class="mk s-enc"></span>第 20 行每个头分到 <code class="t-enc">dim/num_heads</code> 维。</li>
+<li><span class="mk s-enc"></span>第 22 行缩放系数默认 <code class="t-enc">1/sqrt(head_dim)</code>，是标准注意力。</li>
+<li><span class="mk hole"></span>第 24 行用一个线性层一次性算出 Q、K、V，输出维度是 <code class="t-ink">3*dim</code>。</li>
+<li><span class="mk hole"></span>第 26 行输出投影，把多头结果拼回 <code class="t-ink">dim</code>。</li>
+</ul>
+<div class="code">
+<p class="codebar"><span class="sw s-enc"></span>代码 2/2　·　行 16–44　·　编码器</p>
+<pre><span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, x):
+    B, N, C = x.shape
+    <span class="t-kw">qkv</span> = self.<span class="t-kw">qkv</span>(x).reshape(B, N, 3, self.<span class="t-kw">num_heads</span>, C // self.<span class="t-kw">num_heads</span>).permute(2, 0, 3, 1, 4)
+    q, k, v = <span class="t-kw">qkv</span>[0], <span class="t-kw">qkv</span>[1], <span class="t-kw">qkv</span>[2]
+
+    <span class="t-kw">with</span> t<span class="t-kw">or</span>ch.cuda.amp.autoc<span class="t-kw">as</span>t(enabled=<span class="t-kw">False</span>):
+        <span class="t-kw">attn</span> = (q.float() @ k.float().transpose(-2, -1)) * self.<span class="t-kw">scale</span>
+
+    <span class="t-kw">attn</span> = <span class="t-kw">attn</span> - t<span class="t-kw">or</span>ch.max(<span class="t-kw">attn</span>, dim=-1, keepdim=<span class="t-kw">True</span>)[0]
+    <span class="t-kw">attn</span> = <span class="t-kw">attn</span>.softmax(dim=-1)
+    <span class="t-kw">attn</span> = self.<span class="t-kw">attn_drop</span>(<span class="t-kw">attn</span>)
+
+    x = (<span class="t-kw">attn</span> @ v).transpose(1, 2).reshape(B, N, C)
+    x = self.<span class="t-kw">proj</span>(x)
+    x = self.<span class="t-kw">proj_drop</span>(x)
+    <span class="t-kw">return</span> x, <span class="t-kw">attn</span></pre></div>
+<ul>
+<li><span class="mk s-enc"></span>第 31 行把 <code class="t-ink">(B,N,3C)</code> 拆成 <code class="t-enc">(3,B,heads,N,head_dim)</code>，<code class="t-ink">permute(2,0,3,1,4)</code> 就是把 3 提到最前，方便按行取 q/k/v。</li>
+<li><span class="mk hole"></span>第 34–35 行是这段代码的特别之处：注意力分数<strong>强制用 float32 算</strong>，屏蔽掉 AMP 的半精度。这样做的原因是长序列加半精度时 <code class="t-ink">q·k</code> 容易溢出。</li>
+<li><span class="mk hole"></span>第 37 行先减去每行的最大值再 softmax。PyTorch 的 softmax 内部本来就减最大值，这里预减一次是为了让第 38 行的输入幅度更可控，配合半精度更安全。</li>
+<li><span class="mk hole"></span>第 41 行把各头拼回去，<code class="t-ink">transpose(1,2)</code> 把 heads 维和 N 维换回来，再 reshape 成 <code class="t-ink">(B,N,C)</code>。</li>
+<li><span class="mk s-enc"></span>返回的不只是结果，还有注意力矩阵 <code class="t-enc">attn</code>（第 44 行）。<code class="t-enc">Block</code> 里默认丢掉它，只有要可视化注意力时才取。</li>
+</ul>
+</section>
+<section class="sec" id="block">
+<table class="sechead" role="presentation"><tr><td class="sno t-enc">04</td><td class="stt"><h2>Block</h2><p class="smeta"><span class="sw s-enc"></span>文件行 47–69 行　·　编码器</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-enc"></span>代码 1/2　·　行 47–69　·　编码器</p>
+<pre><span class="t-kw">def</span> __<span class="t-kw">in</span>it__(self, dim, <span class="t-kw">num_heads</span>, <span class="t-kw">mlp_ratio</span>=4., <span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>=<span class="t-kw">False</span>, <span class="t-kw">qk_scale</span>=<span class="t-kw">None</span>,
+             drop=0., <span class="t-kw">attn_drop</span>=0., <span class="t-kw">drop_path</span>=0., act_layer=nn.GELU, n<span class="t-kw">or</span>m_layer=nn.LayerN<span class="t-kw">or</span>m):
+    self.<span class="t-kw">norm1</span> = n<span class="t-kw">or</span>m_layer(dim)
+    self.<span class="t-kw">attn</span> = <span class="t-kw">Attention</span>(dim, <span class="t-kw">num_heads</span>=<span class="t-kw">num_heads</span>, <span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>=<span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>, <span class="t-kw">qk_scale</span>=<span class="t-kw">qk_scale</span>,
+                          <span class="t-kw">attn_drop</span>=<span class="t-kw">attn_drop</span>, <span class="t-kw">proj_drop</span>=drop)
+    self.<span class="t-kw">drop_path</span> = <span class="t-kw">DropPath</span>(<span class="t-kw">drop_path</span>) <span class="t-kw">if</span> <span class="t-kw">drop_path</span> &gt; 0. <span class="t-kw">else</span> nn.Identity()
+    self.<span class="t-kw">norm2</span> = n<span class="t-kw">or</span>m_layer(dim)
+    <span class="t-kw">mlp</span>_hidden_dim = <span class="t-kw">in</span>t(dim * <span class="t-kw">mlp_ratio</span>)
+    self.<span class="t-kw">mlp</span> = <span class="t-kw">Mlp</span>(<span class="t-kw">in</span>_features=dim, hidden_features=<span class="t-kw">mlp</span>_hidden_dim, act_layer=act_layer, drop=drop)</pre></div>
+<p>标准 pre-norm Transformer 块。<code class="t-enc">norm1</code> 在注意力前，<code class="t-enc">norm2</code> 在前馈前。<code class="t-enc">drop_path</code> 为 0 时退化成恒等映射（第 56 行）。</p>
+<div class="code">
+<p class="codebar"><span class="sw s-enc"></span>代码 2/2　·　行 47–69　·　编码器</p>
+<pre><span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, x, <span class="t-kw">return_attention</span>=<span class="t-kw">False</span>):
+    <span class="t-kw">if</span> <span class="t-kw">return_attention</span>:
+        _, <span class="t-kw">attn</span> = self.<span class="t-kw">attn</span>(self.<span class="t-kw">norm1</span>(x))
+        <span class="t-kw">return</span> <span class="t-kw">attn</span>
+    <span class="t-kw">else</span>:
+        y, _ = self.<span class="t-kw">attn</span>(self.<span class="t-kw">norm1</span>(x))
+        x = x + self.<span class="t-kw">drop_path</span>(y)
+        x = x + self.<span class="t-kw">drop_path</span>(self.<span class="t-kw">mlp</span>(self.<span class="t-kw">norm2</span>(x)))
+    <span class="t-kw">return</span> x</pre></div>
+<ul>
+<li><span class="mk hole"></span>第 62–64 行的分支只给可视化用：只跑注意力并把矩阵返回，不改 <code class="t-ink">x</code>。</li>
+<li><span class="mk s-enc"></span>第 66–68 行是残差结构：注意力输出加回 <code class="t-ink">x</code>，再过 MLP 加回 <code class="t-ink">x</code>。<code class="t-enc">norm2</code> 加在 MLP 前，而非残差相加之后。</li>
+</ul>
+</section>
+<section class="sec" id="lsce">
+<table class="sechead" role="presentation"><tr><td class="sno t-loss">05</td><td class="stt"><h2>LabelSmoothingCrossEntropy</h2><p class="smeta"><span class="sw s-loss"></span>文件行 72–87 行　·　损失</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-loss"></span>代码 1/1　·　行 72–87　·　损失</p>
+<pre><span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, x, target):
+    <span class="t-kw">logprobs</span> = t<span class="t-kw">or</span>ch.nn.functional.log_softmax(x, dim=-1)
+    <span class="t-kw">nll_loss</span> = -<span class="t-kw">logprobs</span>.gather(dim=-1, <span class="t-kw">in</span>dex=target.unsqueeze(1))
+    <span class="t-kw">nll_loss</span> = <span class="t-kw">nll_loss</span>.squeeze(1)
+    <span class="t-kw">smooth_loss</span> = -<span class="t-kw">logprobs</span>.mean(dim=-1)
+    <span class="t-kw">loss</span> = self.<span class="t-kw">confidence</span> * <span class="t-kw">nll_loss</span> + self.<span class="t-kw">smoothing</span> * <span class="t-kw">smooth_loss</span>
+    <span class="t-kw">return</span> <span class="t-kw">loss</span></pre></div>
+<ul>
+<li><span class="mk hole"></span>第 82 行取 log 概率。</li>
+<li><span class="mk s-loss"></span>第 83–84 行取出正确答案那一列，取负号就是普通交叉熵。<code class="t-ink">gather</code> 配合 <code class="t-ink">target.unsqueeze(1)</code> 是为了按索引取值。</li>
+<li><span class="mk s-loss"></span>第 85 行 <code class="t-loss">smooth_loss</code> 是所有类别的平均负 log 概率，代表「均匀猜」的损失。</li>
+<li><span class="mk s-loss"></span>第 86 行按 <code class="t-loss">1-smoothing</code> 和 <code class="t-loss">smoothing</code> 加权混合。默认 <code class="t-loss">smoothing=0.1</code>，也就是把正确答案只看成 90% 置信。这就是 README 里反复提到的标签平滑，改 <code class="t-loss">--label_smoothing 0</code> 就退回精确交叉熵。</li>
+</ul>
+</section>
+<section class="sec" id="bert">
+<table class="sechead" role="presentation"><tr><td class="sno t-tok">06</td><td class="stt"><h2>BertEmbeddings</h2><p class="smeta"><span class="sw s-tok"></span>文件行 90–124 行　·　编号</p></td></tr></table>
+<p>这是 MAGE 把图像编号当「词」喂给 Transformer 的入口。</p>
+<div class="code">
+<p class="codebar"><span class="sw s-tok"></span>代码 1/2　·　行 90–124　·　编号</p>
+<pre><span class="t-kw">def</span> __<span class="t-kw">in</span>it__(self, <span class="t-kw">vocab_size</span>, hidden_size, max_<span class="t-kw">position_embeddings</span>, dropout=0.1):
+    self.<span class="t-kw">word_embeddings</span> = nn.Embedd<span class="t-kw">in</span>g(<span class="t-kw">vocab_size</span>, hidden_size)
+    self.<span class="t-kw">position_embeddings</span> = nn.Embedd<span class="t-kw">in</span>g(max_<span class="t-kw">position_embeddings</span>, hidden_size)
+    self.LayerN<span class="t-kw">or</span>m = nn.LayerN<span class="t-kw">or</span>m(hidden_size, eps=1e-6)
+    self.dropout = nn.Dropout(dropout)
+    self.reg<span class="t-kw">is</span>ter_buffer(<span class="t-ext">"position_ids"</span>, t<span class="t-kw">or</span>ch.arange(max_<span class="t-kw">position_embeddings</span>).exp<span class="t-kw">and</span>((1, -1)))
+    t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.n<span class="t-kw">or</span>mal_(self.<span class="t-kw">word_embeddings</span>.weight, std=.02)
+    t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.n<span class="t-kw">or</span>mal_(self.<span class="t-kw">position_embeddings</span>.weight, std=.02)</pre></div>
+<ul>
+<li><span class="mk s-tok"></span>第 95 行词嵌入表，行数就是词表大小（本文件里是 2025），列数是隐层维度。</li>
+<li><span class="mk s-cls"></span>第 96 行位置嵌入表，可学习，最多 257 个位置（256 个图块 + 1 个类槽）。</li>
+<li><span class="mk hole"></span>第 100 行 LayerNorm。第 103 行把位置 id 注册成 buffer，不受梯度影响、跟随模型到处走。</li>
+<li><span class="mk hole"></span>第 105–106 行把两张表都按 <code class="t-ink">std=0.02</code> 初始化。</li>
+</ul>
+<div class="code">
+<p class="codebar"><span class="sw s-tok"></span>代码 2/2　·　行 90–124　·　编号</p>
+<pre><span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, <span class="t-kw">input_ids</span>):
+    <span class="t-kw">in</span>put_shape = <span class="t-kw">input_ids</span>.size()
+    <span class="t-kw">seq_len</span>gth = <span class="t-kw">in</span>put_shape[1]
+    position_ids = self.position_ids[:, :<span class="t-kw">seq_len</span>gth]
+    <span class="t-kw">inputs_embeds</span> = self.<span class="t-kw">word_embeddings</span>(<span class="t-kw">input_ids</span>)
+    <span class="t-kw">position_embeddings</span> = self.<span class="t-kw">position_embeddings</span>(position_ids)
+    embedd<span class="t-kw">in</span>gs = <span class="t-kw">inputs_embeds</span> + <span class="t-kw">position_embeddings</span>
+    embedd<span class="t-kw">in</span>gs = self.LayerN<span class="t-kw">or</span>m(embedd<span class="t-kw">in</span>gs)
+    embedd<span class="t-kw">in</span>gs = self.dropout(embedd<span class="t-kw">in</span>gs)
+    <span class="t-kw">return</span> embedd<span class="t-kw">in</span>gs</pre></div>
+<ul>
+<li><span class="mk hole"></span>第 115 行按当前序列长度截取位置 id。</li>
+<li><span class="mk hole"></span>第 117–120 行查表相加，词嵌入叠位置嵌入。</li>
+<li><span class="mk s-leg"></span>第 122–123 行归一化加 dropout。这里的位置信息是<strong>学出来的</strong>，和后面那个正弦余弦 <code class="t-leg">pos_embed</code> 是两码事，后者其实没被用到。</li>
+</ul>
+</section>
+<section class="sec" id="mlm">
+<table class="sechead" role="presentation"><tr><td class="sno t-tok">07</td><td class="stt"><h2>MlmLayer：点积分类头</h2><p class="smeta"><span class="sw s-tok"></span>文件行 127–143 行　·　编号</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-tok"></span>代码 1/1　·　行 127–143　·　编号</p>
+<pre><span class="t-kw">def</span> __<span class="t-kw">in</span>it__(self, feat_emb_dim, <span class="t-kw">word_emb_dim</span>, <span class="t-kw">vocab_size</span>):
+    self.fc = nn.L<span class="t-kw">in</span>ear(feat_emb_dim, <span class="t-kw">word_emb_dim</span>)
+    self.gelu = nn.GELU()
+    self.ln = nn.LayerN<span class="t-kw">or</span>m(<span class="t-kw">word_emb_dim</span>)
+    self.bi<span class="t-kw">as</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, 1, <span class="t-kw">vocab_size</span>))
+
+<span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, x, <span class="t-kw">word_embeddings</span>):
+    <span class="t-kw">mlm_hidden</span> = self.fc(x)
+    <span class="t-kw">mlm_hidden</span> = self.gelu(<span class="t-kw">mlm_hidden</span>)
+    <span class="t-kw">mlm_hidden</span> = self.ln(<span class="t-kw">mlm_hidden</span>)
+    <span class="t-kw">word_embeddings</span> = <span class="t-kw">word_embeddings</span>.transpose(0, 1)
+    <span class="t-kw">logits</span> = t<span class="t-kw">or</span>ch.matmul(<span class="t-kw">mlm_hidden</span>, <span class="t-kw">word_embeddings</span>)
+    <span class="t-kw">logits</span> = <span class="t-kw">logits</span> + self.bi<span class="t-kw">as</span>
+    <span class="t-kw">return</span> <span class="t-kw">logits</span></pre></div>
+<p>这是 README 表格里那一列「点积」的官方实现。</p>
+<ul>
+<li><span class="mk s-dec"></span>第 137–139 行把解码器输出投影到词向量维度，过 GELU 再 LayerNorm。</li>
+<li><span class="mk s-tok"></span>第 140 行把词表转成 <code class="t-tok">(word_emb_dim, vocab_size)</code>，这里的 <code class="t-tok">word_embeddings</code> 是从外面传进来的、并且已经 <code class="t-ink">detach</code>（见第 363 行）。</li>
+<li><span class="mk s-tok"></span>第 141 行用<strong>点积</strong>得到每个词的分数。隐向量和词表向量做内积，谁方向最接近谁的分数就最高。</li>
+<li><span class="mk hole"></span>第 134/142 行是一个偏置项，初始化为 0，形状是每个词一个标量。</li>
+</ul>
+<div class="note n-enc"><p class="lbl">NOTE</p><p>分类权重就是词嵌入表本身。隐向量被迫落在词向量张成的空间里，这正是 README 4.1 节说的「隐向量被限制在词向量空间」，也是「换相近小块」现象的机制来源。</p></div>
+</section>
+<section class="sec" id="init">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">08</td><td class="stt"><h2>MaskedGenerativeEncoderViT.__init__</h2><p class="smeta"><span class="sw s-ink"></span>文件行 146–233 行　·　整体与结构</p></td></tr></table>
+<p>构造函数比较长，拆开看。</p>
+<h4 class="h4"><span class="sw s-ext"></span>VQGAN 部分 158–170 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-ext"></span>代码 1/5　·　行 158–170　·　外部依赖 / 冻结</p>
+<pre>config = <span class="t-kw">OmegaConf</span>.load(<span class="t-ext">'config/vqgan.yaml'</span>).model
+self.<span class="t-kw">vqgan</span> = <span class="t-kw">VQModel</span>(<span class="t-kw">ddconfig</span>=config.params.<span class="t-kw">ddconfig</span>,
+                     <span class="t-kw">n_embed</span>=config.params.<span class="t-kw">n_embed</span>,
+                     <span class="t-kw">embed_dim</span>=config.params.<span class="t-kw">embed_dim</span>,
+                     <span class="t-kw">ckpt_path</span>=<span class="t-kw">vqgan_ckpt_path</span>)
+<span class="t-kw">for</span> param <span class="t-kw">in</span> self.<span class="t-kw">vqgan</span>.parameters():
+    param.requires_grad = <span class="t-kw">False</span>
+
+self.<span class="t-kw">codebook_size</span> = config.params.<span class="t-kw">n_embed</span>
+<span class="t-kw">vocab_size</span> = self.<span class="t-kw">codebook_size</span> + 1000 + 1
+self.<span class="t-kw">fake_class_label</span> = self.<span class="t-kw">codebook_size</span> + 1100 - 1024
+self.<span class="t-kw">mask_token_label</span> = <span class="t-kw">vocab_size</span> - 1</pre></div>
+<ul>
+<li><span class="mk s-ext"></span>第 160–164 行读配置并实例化 VQGAN，权重从 <code class="t-ext">vqgan_ckpt_path</code> 加载。</li>
+<li><span class="mk s-ext"></span>第 165–166 行把 VQGAN 全部参数冻结。它只在训练里当编码器用，不参与更新。</li>
+<li><span class="mk s-tok"></span>第 168 行 <code class="t-tok">codebook_size</code> 就是词表大小 1024，也就是一张图的编号取值范围。</li>
+<li><span class="mk s-tok"></span>第 169 行 <code class="t-tok">vocab_size = 1024 + 1000 + 1 = 2025</code>。多出来的 1000 是给分类任务用的类别编号，最后 1 个是 mask 专用的编号。这说明 MAGE 是「生成 + 分类」的混合模型。</li>
+<li><span class="mk s-cls"></span>第 170 行 <code class="t-cls">fake_class_label = 1024 + 1100 - 1024 = 1100</code>。它是放在序列第 0 位的一个占位编号，用来当 BERT 里的 <code class="t-ink">[CLS]</code>。它的 id 落在类别编号区间里，和真实的 0..1023 编号不会撞车，它对应的那一行嵌入是可学习的。</li>
+<li><span class="mk s-mask"></span>第 171 行 <code class="t-mask">mask_token_label = 2024</code>，遮盖位置用它替换。</li>
+</ul>
+<h4 class="h4"><span class="sw s-tok"></span>位置嵌入与遮挡分布 172–181 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-tok"></span>代码 2/5　·　行 172–181　·　编号</p>
+<pre>self.<span class="t-kw">token_emb</span> = <span class="t-kw">BertEmbeddings</span>(<span class="t-kw">vocab_size</span>=<span class="t-kw">vocab_size</span>, hidden_size=<span class="t-kw">embed_dim</span>,
+                                max_<span class="t-kw">position_embeddings</span>=256+1, dropout=0.1)
+
+self.<span class="t-kw">mask_ratio_min</span> = <span class="t-kw">mask_ratio_min</span>
+self.<span class="t-kw">mask_ratio_generator</span> = <span class="t-kw">stats</span>.<span class="t-kw">truncnorm</span>((<span class="t-kw">mask_ratio_min</span> - <span class="t-kw">mask_ratio_mu</span>) / <span class="t-kw">mask_ratio_std</span>,
+                                            (<span class="t-kw">mask_ratio_max</span> - <span class="t-kw">mask_ratio_mu</span>) / <span class="t-kw">mask_ratio_std</span>,
+                                            loc=<span class="t-kw">mask_ratio_mu</span>, <span class="t-kw">scale</span>=<span class="t-kw">mask_ratio_std</span>)</pre></div>
+<ul>
+<li><span class="mk s-ext"></span>第 172–175 行就是上面那个 BERT 嵌入，词表 2025，隐层 <code class="t-ext">embed_dim</code>，位置数 257。</li>
+<li><span class="mk s-mask"></span>第 179–181 行构造一个<strong>截断正态分布</strong>，取值被限制在 <code class="t-mask">[mask_ratio_min, mask_ratio_max]</code>。scipy 的 <code class="t-mask">truncnorm</code> 要求先把上下界标准化成 <code class="t-ink">(a,b)</code>，所以前面减均值除标准差。默认均值 0.55、标准差 0.25、下界 0.5、上界 1.0。每次前向会从这个分布抽一个标量当这次的遮挡比例。这是 MAGE 和 MAE（固定 75%）最大的不同，也是 README 4.4 节「0.5-1 对 0-1」要改的地方。</li>
+</ul>
+<h4 class="h4"><span class="sw s-enc"></span>编码器 184–196 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-enc"></span>代码 3/5　·　行 184–196　·　编码器</p>
+<pre>dropout_rate = 0.1
+self.<span class="t-kw">patch_embed</span> = <span class="t-kw">PatchEmbed</span>(img_size, patch_size, <span class="t-kw">in</span>_chans, <span class="t-kw">embed_dim</span>)
+<span class="t-kw">num_patches</span> = self.<span class="t-kw">patch_embed</span>.<span class="t-kw">num_patches</span>
+self.<span class="t-kw">cls_token</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, 1, <span class="t-kw">embed_dim</span>))
+self.<span class="t-kw">pos_embed</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, <span class="t-kw">num_patches</span> + 1, <span class="t-kw">embed_dim</span>), requires_grad=<span class="t-kw">False</span>)
+self.<span class="t-kw">blocks</span> = nn.ModuleL<span class="t-kw">is</span>t([
+    <span class="t-kw">Block</span>(<span class="t-kw">embed_dim</span>, <span class="t-kw">num_heads</span>, <span class="t-kw">mlp_ratio</span>, <span class="t-kw">qkv</span>_bi<span class="t-kw">as</span>=<span class="t-kw">True</span>, <span class="t-kw">qk_scale</span>=<span class="t-kw">None</span>, n<span class="t-kw">or</span>m_layer=n<span class="t-kw">or</span>m_layer,
+          drop=dropout_rate, <span class="t-kw">attn_drop</span>=dropout_rate)
+    <span class="t-kw">for</span> i <span class="t-kw">in</span> range(depth)])
+self.n<span class="t-kw">or</span>m = n<span class="t-kw">or</span>m_layer(<span class="t-kw">embed_dim</span>)</pre></div>
+<div class="note n-leg"><p class="lbl">注意 · 遗留结构</p><p>这里要敲黑板：<code class="t-leg">patch_embed</code>、<code class="t-leg">pos_embed</code>、和后面的 <code class="t-dec">decoder_pos_embed</code> <strong>在真正的前向里几乎都不用</strong>。实际 token 序列来自 VQGAN 编号经 <code class="t-tok">token_emb</code> 得到的嵌入，位置信息也来自 <code class="t-tok">token_emb</code> 里可学习的位置表。它们是从 MAE 骨架继承下来的遗留结构，<code class="t-tok">num_patches</code> 只是拿来算 <code class="t-leg">pos_embed</code> 的形状用。读代码时不要被它们带偏。</p></div>
+<ul>
+<li><span class="mk s-enc"></span>第 192–195 行按 <code class="t-ink">depth</code> 堆编码器块，<code class="t-ink">drop</code> 和 <code class="t-enc">attn_drop</code> 都设成 0.1，<code class="t-enc">qkv_bias=True</code>。</li>
+<li><span class="mk hole"></span>第 196 行最后一层 LayerNorm。</li>
+</ul>
+<h4 class="h4"><span class="sw s-dec"></span>解码器 200–215 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-dec"></span>代码 4/5　·　行 200–215　·　解码器</p>
+<pre>self.<span class="t-kw">decoder_embed</span> = nn.L<span class="t-kw">in</span>ear(<span class="t-kw">embed_dim</span>, <span class="t-kw">decoder_embed_dim</span>, bi<span class="t-kw">as</span>=<span class="t-kw">True</span>)
+self.<span class="t-kw">mask_token</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, 1, <span class="t-kw">decoder_embed_dim</span>))
+self.<span class="t-kw">pad_with_cls_token</span> = <span class="t-kw">True</span>
+self.<span class="t-kw">decoder_pos_embed</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, <span class="t-kw">num_patches</span> + 1, <span class="t-kw">decoder_embed_dim</span>), requires_grad=<span class="t-kw">False</span>)
+self.<span class="t-kw">decoder_pos_embed_learned</span> = nn.Parameter(t<span class="t-kw">or</span>ch.zeros(1, <span class="t-kw">num_patches</span> + 1, <span class="t-kw">decoder_embed_dim</span>))
+self.<span class="t-kw">decoder_blocks</span> = nn.ModuleL<span class="t-kw">is</span>t([... <span class="t-kw">for</span> i <span class="t-kw">in</span> range(<span class="t-kw">decoder_depth</span>)])
+self.<span class="t-kw">decoder_norm</span> = n<span class="t-kw">or</span>m_layer(<span class="t-kw">decoder_embed_dim</span>)
+self.<span class="t-kw">decoder_pred</span> = nn.L<span class="t-kw">in</span>ear(<span class="t-kw">decoder_embed_dim</span>, patch_size**2 * <span class="t-kw">in</span>_chans, bi<span class="t-kw">as</span>=<span class="t-kw">True</span>)</pre></div>
+<ul>
+<li><span class="mk s-enc"></span>第 201 行把编码器输出维度映射到解码器维度。</li>
+<li><span class="mk s-leg"></span>第 203 行 <code class="t-leg">mask_token</code> 又是一个遗留参数，因为第 204 行 <code class="t-cls">pad_with_cls_token = True</code>，实际用的是类槽的表示来填充遮住的位置，这个 <code class="t-leg">mask_token</code> 不会被调用。</li>
+<li><span class="mk s-dec"></span>第 206–207 行两套位置嵌入，固定的那套没用，实际用第 207 行可学习的 <code class="t-dec">decoder_pos_embed_learned</code>。</li>
+<li><span class="mk s-leg"></span>第 215 行 <code class="t-leg">decoder_pred</code> 是把解码器输出变回像素块形状的分支，用来做 MAE 那种像素重建。MAGE 走的是编号分类，这条分支同样不参与前向，属于遗留。</li>
+</ul>
+<h4 class="h4"><span class="sw s-loss"></span>分类头与损失 218–233 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-loss"></span>代码 5/5　·　行 218–233　·　损失</p>
+<pre>self.l<span class="t-kw">in</span>ear_head = bool(l<span class="t-kw">in</span>ear_head)
+<span class="t-kw">if</span> self.l<span class="t-kw">in</span>ear_head:
+    self.mlm_layer = <span class="t-kw">None</span>
+    self.<span class="t-kw">token_classifier</span> = nn.L<span class="t-kw">in</span>ear(<span class="t-kw">decoder_embed_dim</span>, self.<span class="t-kw">codebook_size</span>)
+<span class="t-kw">else</span>:
+    self.mlm_layer = MlmLayer(feat_emb_dim=<span class="t-kw">decoder_embed_dim</span>, <span class="t-kw">word_emb_dim</span>=<span class="t-kw">embed_dim</span>, <span class="t-kw">vocab_size</span>=<span class="t-kw">vocab_size</span>)
+    self.<span class="t-kw">token_classifier</span> = <span class="t-kw">None</span>
+
+self.<span class="t-kw">norm_pix_loss</span> = <span class="t-kw">norm_pix_loss</span>
+self.<span class="t-kw">criterion</span> = <span class="t-kw">LabelSmoothingCrossEntropy</span>(<span class="t-kw">smoothing</span>=label_<span class="t-kw">smoothing</span>)
+self.<span class="t-kw">in</span>itialize_weights()</pre></div>
+<ul>
+<li><span class="mk s-tok"></span>第 220–227 行是二选一。<code class="t-ink">linear_head=True</code> 时建一个自由的一层线性层直接映射到 1024 类；否则用上面的 <code class="t-ink">MlmLayer</code> 点积头。这对应 README 4.1 节表格里的两行，命令行开关就是 <code class="t-ink">--linear_head</code>。</li>
+<li><span class="mk s-loss"></span>第 231 行把平滑系数固定进损失函数，<code class="t-loss">--label_smoothing 0.1/0</code> 就在这里生效。</li>
+</ul>
+</section>
+<section class="sec" id="iw">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">09</td><td class="stt"><h2>initialize_weights 与 _init_weights</h2><p class="smeta"><span class="sw s-ink"></span>文件行 235–264 行　·　整体与结构</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-ink"></span>代码 1/2　·　行 235–264　·　整体与结构</p>
+<pre><span class="t-kw">pos_embed</span> = get_2d_s<span class="t-kw">in</span>cos_<span class="t-kw">pos_embed</span>(self.<span class="t-kw">pos_embed</span>.shape[-1], <span class="t-kw">in</span>t(self.<span class="t-kw">patch_embed</span>.<span class="t-kw">num_patches</span>**.5), <span class="t-kw">cls_token</span>=<span class="t-kw">True</span>)
+self.<span class="t-kw">pos_embed</span>.data.copy_(t<span class="t-kw">or</span>ch.<span class="t-kw">from</span>_numpy(<span class="t-kw">pos_embed</span>).float().unsqueeze(0))
+
+<span class="t-kw">decoder_pos_embed</span> = get_2d_s<span class="t-kw">in</span>cos_<span class="t-kw">pos_embed</span>(...)
+self.<span class="t-kw">decoder_pos_embed</span>.data.copy_(t<span class="t-kw">or</span>ch.<span class="t-kw">from</span>_numpy(<span class="t-kw">decoder_pos_embed</span>).float().unsqueeze(0))
+
+w = self.<span class="t-kw">patch_embed</span>.<span class="t-kw">proj</span>.weight.data
+t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.xavier_un<span class="t-kw">if</span><span class="t-kw">or</span>m_(w.view([w.shape[0], -1]))
+
+t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.n<span class="t-kw">or</span>mal_(self.<span class="t-kw">cls_token</span>, std=.02)
+t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.n<span class="t-kw">or</span>mal_(self.<span class="t-kw">mask_token</span>, std=.02)
+t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.n<span class="t-kw">or</span>mal_(self.<span class="t-kw">decoder_pos_embed_learned</span>, std=.02)
+
+self.apply(self._<span class="t-kw">in</span>it_weights)</pre></div>
+<ul>
+<li><span class="mk hole"></span>第 238–242 行填充两套固定正弦余弦位置嵌入。虽然前向没用到，还是要填，因为它们是参数、会被算进模型和保存进检查点。</li>
+<li><span class="mk s-leg"></span>第 245–246 行把 <code class="t-leg">patch_embed</code> 的卷积权重按线性层方式做 xavier 初始化。</li>
+<li><span class="mk s-cls"></span>第 248–251 行初始化几个零参数：<code class="t-cls">cls_token</code>、<code class="t-leg">mask_token</code>、可学习解码器位置嵌入，都用 <code class="t-ink">std=0.02</code>。</li>
+<li><span class="mk hole"></span>第 254 行 <code class="t-ink">self.apply</code> 遍历所有子模块，调用 <code class="t-ink">_init_weights</code>。</li>
+</ul>
+<div class="code">
+<p class="codebar"><span class="sw s-ink"></span>代码 2/2　·　行 235–264　·　整体与结构</p>
+<pre><span class="t-kw">def</span> _<span class="t-kw">in</span>it_weights(self, m):
+    <span class="t-kw">if</span> <span class="t-kw">is</span><span class="t-kw">in</span>stance(m, nn.L<span class="t-kw">in</span>ear):
+        t<span class="t-kw">or</span>ch.nn.<span class="t-kw">in</span>it.xavier_un<span class="t-kw">if</span><span class="t-kw">or</span>m_(m.weight)
+        <span class="t-kw">if</span> <span class="t-kw">is</span><span class="t-kw">in</span>stance(m, nn.L<span class="t-kw">in</span>ear) <span class="t-kw">and</span> m.bi<span class="t-kw">as</span> <span class="t-kw">is</span> <span class="t-kw">not</span> <span class="t-kw">None</span>:
+            nn.<span class="t-kw">in</span>it.constant_(m.bi<span class="t-kw">as</span>, 0)
+    <span class="t-kw">elif</span> <span class="t-kw">is</span><span class="t-kw">in</span>stance(m, nn.LayerN<span class="t-kw">or</span>m):
+        nn.<span class="t-kw">in</span>it.constant_(m.bi<span class="t-kw">as</span>, 0)
+        nn.<span class="t-kw">in</span>it.constant_(m.weight, 1.0)</pre></div>
+<ul>
+<li><span class="mk hole"></span>线性层用 xavier，偏置清零。</li>
+<li><span class="mk hole"></span>LayerNorm 的缩放设 1、偏移设 0。</li>
+<li><span class="mk hole"></span>这个函数只管 <code class="t-ink">Linear</code> 和 <code class="t-ink">LayerNorm</code>，<code class="t-ink">nn.Embedding</code>（词嵌入、位置嵌入）和 <code class="t-ink">MlmLayer.bias</code> 不在其中，它们保留各自在构造函数里的初始化。</li>
+</ul>
+</section>
+<section class="sec" id="fenc">
+<table class="sechead" role="presentation"><tr><td class="sno t-enc">10</td><td class="stt"><h2>forward_encoder</h2><p class="smeta"><span class="sw s-enc"></span>文件行 266–333 行　·　编码器</p></td></tr></table>
+<p>这是全文件最需要慢慢读的地方。</p>
+<h4 class="h4"><span class="sw s-tok"></span>输入分两种 267–281 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-tok"></span>代码 1/3　·　行 267–281　·　编号</p>
+<pre><span class="t-kw">if</span> x.dtype <span class="t-kw">in</span> (t<span class="t-kw">or</span>ch.<span class="t-kw">in</span>t32, t<span class="t-kw">or</span>ch.<span class="t-kw">in</span>t64):
+    <span class="t-kw">token_indices</span> = x.long()
+    <span class="t-kw">if</span> <span class="t-kw">token_indices</span>.dim() == 1:
+        <span class="t-kw">token_indices</span> = <span class="t-kw">token_indices</span>.unsqueeze(0)
+    <span class="t-kw">token_indices</span> = <span class="t-kw">token_indices</span>[:, :256].contiguous()
+    <span class="t-kw">gt_indices</span> = <span class="t-kw">token_indices</span>.clone()
+    device = <span class="t-kw">token_indices</span>.device
+<span class="t-kw">else</span>:
+    <span class="t-kw">with</span> t<span class="t-kw">or</span>ch.no_grad():
+        <span class="t-kw">z_q</span>, _, <span class="t-kw">token_tuple</span> = self.<span class="t-kw">vqgan</span>.<span class="t-kw">encode</span>(x)
+    _, _, <span class="t-kw">token_indices</span> = <span class="t-kw">token_tuple</span>
+    <span class="t-kw">token_indices</span> = <span class="t-kw">token_indices</span>.reshape(<span class="t-kw">z_q</span>.size(0), -1)
+    <span class="t-kw">gt_indices</span> = <span class="t-kw">token_indices</span>.clone().detach().long()
+    device = x.device</pre></div>
+<ul>
+<li><span class="mk s-ext"></span>第 268 行判断输入是不是整数。是整数就表示这批数据已经是<strong>缓存好的编号</strong>，直接拿来用，省掉每步的 VQGAN 编码。对应 <code class="t-ink">main_pretrain.py</code> 里的 <code class="t-ink">--cache_tokens</code>。</li>
+<li><span class="mk hole"></span>第 272 行只取前 256 个位置。</li>
+<li><span class="mk s-tok"></span>第 273 行把编号复制一份当监督目标 <code class="t-tok">gt_indices</code>。</li>
+<li><span class="mk s-ext"></span>第 275–281 行是图像分支：VQGAN 前向拿 <code class="t-ext">token_tuple</code>，取第三个元素作为编号，reshape 成 <code class="t-ink">(bsz, 256)</code>，克隆并长期保存为标签。整个过程 <code class="t-ink">no_grad</code>，VQGAN 不产生梯度。</li>
+</ul>
+<h4 class="h4"><span class="sw s-mask"></span>抽遮挡比例并造掩码 283–305 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-mask"></span>代码 2/3　·　行 283–305　·　遮盖 / 丢弃</p>
+<pre>bsz, <span class="t-kw">seq_len</span> = <span class="t-kw">token_indices</span>.size()
+<span class="t-kw">mask_ratio_min</span> = self.<span class="t-kw">mask_ratio_min</span>
+<span class="t-kw">mask_rate</span> = self.<span class="t-kw">mask_ratio_generator</span>.<span class="t-kw">rvs</span>(1)[0]
+
+<span class="t-kw">num_dropped_tokens</span> = <span class="t-kw">in</span>t(np.ceil(<span class="t-kw">seq_len</span> * <span class="t-kw">mask_ratio_min</span>))
+<span class="t-kw">num_masked_tokens</span> = <span class="t-kw">in</span>t(np.ceil(<span class="t-kw">seq_len</span> * <span class="t-kw">mask_rate</span>))
+
+<span class="t-kw">while</span> <span class="t-kw">True</span>:
+    <span class="t-kw">noise</span> = t<span class="t-kw">or</span>ch.r<span class="t-kw">and</span>(bsz, <span class="t-kw">seq_len</span>, device=device)
+    s<span class="t-kw">or</span>ted_<span class="t-kw">noise</span>, _ = t<span class="t-kw">or</span>ch.s<span class="t-kw">or</span>t(<span class="t-kw">noise</span>, dim=1)
+    <span class="t-kw">cutoff_drop</span> = s<span class="t-kw">or</span>ted_<span class="t-kw">noise</span>[:, <span class="t-kw">num_dropped_tokens</span>-1:<span class="t-kw">num_dropped_tokens</span>]
+    <span class="t-kw">cutoff_mask</span> = s<span class="t-kw">or</span>ted_<span class="t-kw">noise</span>[:, <span class="t-kw">num_masked_tokens</span>-1:<span class="t-kw">num_masked_tokens</span>]
+    <span class="t-kw">token_drop_mask</span> = (<span class="t-kw">noise</span> &lt;= <span class="t-kw">cutoff_drop</span>).float()
+    <span class="t-kw">token_all_mask</span> = (<span class="t-kw">noise</span> &lt;= <span class="t-kw">cutoff_mask</span>).float()
+    <span class="t-kw">if</span> <span class="t-kw">token_drop_mask</span>.sum() == bsz*<span class="t-kw">num_dropped_tokens</span> <span class="t-kw">and</span> <span class="t-kw">token_all_mask</span>.sum() == bsz*<span class="t-kw">num_masked_tokens</span>:
+        <span class="t-kw">break</span>
+    <span class="t-kw">else</span>:
+        <span class="t-kw">print</span>(<span class="t-ext">"Rerandom the noise!"</span>)
+
+<span class="t-kw">token_indices</span>[<span class="t-kw">token_all_mask</span>.nonzero(<span class="t-kw">as</span>_tuple=<span class="t-kw">True</span>)] = self.<span class="t-kw">mask_token_label</span></pre></div>
+<ul>
+<li><span class="mk s-mask"></span>第 286 行从截断正态抽<strong>一个</strong>比例，这一批数据共用同一个 <code class="t-mask">mask_rate</code>。</li>
+<li><span class="mk s-mask"></span>第 288 行 <code class="t-mask">num_dropped_tokens</code> 用 <code class="t-mask">mask_ratio_min</code> 算，默认 <code class="t-ink">ceil(256*0.5)=128</code>。这是编码器固定要丢掉的数量。</li>
+<li><span class="mk s-mask"></span>第 289 行 <code class="t-mask">num_masked_tokens</code> 用抽到的比例算，标记为「用 mask 编号替换」的数量。</li>
+<li><span class="mk s-mask"></span>第 291–302 行用「随机数排序后取第 k 个」的办法精确定选出恰好 k 个位置。<code class="t-mask">cutoff_drop</code> 是第 128 小值，<code class="t-mask">noise &lt;= cutoff</code> 刚好选中 128 个。</li>
+<li><span class="mk hole"></span><code class="t-ink">while True</code> 循环处理并列的问题：如果噪声里有相等的值，选中个数可能对不上，就重新抽。正常情况下几乎不会触发。</li>
+<li><span class="mk s-mask"></span>第 297 行 <code class="t-mask">token_drop_mask</code> 标记要<strong>从编码器输入里删掉</strong>的 128 个位置。</li>
+<li><span class="mk s-mask"></span>第 298 行 <code class="t-mask">token_all_mask</code> 标记要<strong>替换成 mask 编号</strong>的位置，数量至少 128，是它的超集。</li>
+<li><span class="mk s-mask"></span>第 304 行把 <code class="t-mask">token_all_mask</code> 为 1 的位置的编号改成 2024。此时改的是输入，<code class="t-tok">gt_indices</code> 还留着原始编号当答案。</li>
+</ul>
+<h4 class="h4"><span class="sw s-cls"></span>拼类槽、嵌入、丢弃 307–333 行</h4>
+<div class="code">
+<p class="codebar"><span class="sw s-cls"></span>代码 3/3　·　行 307–333　·　类槽</p>
+<pre><span class="t-kw">token_indices</span> = t<span class="t-kw">or</span>ch.cat([t<span class="t-kw">or</span>ch.zeros(<span class="t-kw">token_indices</span>.size(0), 1, device=device), <span class="t-kw">token_indices</span>], dim=1)
+<span class="t-kw">token_indices</span>[:, 0] = self.<span class="t-kw">fake_class_label</span>
+<span class="t-kw">token_drop_mask</span> = t<span class="t-kw">or</span>ch.cat([t<span class="t-kw">or</span>ch.zeros(bsz, 1, device), <span class="t-kw">token_drop_mask</span>], dim=1)
+<span class="t-kw">token_all_mask</span> = t<span class="t-kw">or</span>ch.cat([t<span class="t-kw">or</span>ch.zeros(bsz, 1, device), <span class="t-kw">token_all_mask</span>], dim=1)
+<span class="t-kw">token_indices</span> = <span class="t-kw">token_indices</span>.long()
+<span class="t-kw">input_embeddings</span> = self.<span class="t-kw">token_emb</span>(<span class="t-kw">token_indices</span>)
+bsz, <span class="t-kw">seq_len</span>, emb_dim = <span class="t-kw">input_embeddings</span>.shape
+
+<span class="t-kw">token_keep_mask</span> = 1 - <span class="t-kw">token_drop_mask</span>
+<span class="t-kw">input_embeddings_after_drop</span> = <span class="t-kw">input_embeddings</span>[<span class="t-kw">token_keep_mask</span>.nonzero(<span class="t-kw">as</span>_tuple=<span class="t-kw">True</span>)].reshape(bsz, -1, emb_dim)
+
+x = <span class="t-kw">input_embeddings_after_drop</span>
+<span class="t-kw">for</span> blk <span class="t-kw">in</span> self.<span class="t-kw">blocks</span>:
+    x = blk(x)
+x = self.n<span class="t-kw">or</span>m(x)
+
+<span class="t-kw">return</span> x, <span class="t-kw">gt_indices</span>, <span class="t-kw">token_drop_mask</span>, <span class="t-kw">token_all_mask</span></pre></div>
+<ul>
+<li><span class="mk s-cls"></span>第 308–310 行在序列最前面插一个位置，编号设成 <code class="t-cls">fake_class_label</code>（1100），当类槽。</li>
+<li><span class="mk s-cls"></span>第 311–314 行给两个掩码也在前面补 0，长度对齐到 257。类槽永远不遮、永远不丢。</li>
+<li><span class="mk s-ext"></span>第 317 行走 BERT 嵌入，得到 <code class="t-ext">(bsz, 257, embed_dim)</code>。</li>
+<li><span class="mk s-mask"></span>第 322–323 行按 <code class="t-mask">token_keep_mask</code> 选出没被丢的嵌入，然后 reshape 回 <code class="t-ink">(bsz, 257-128, emb_dim)</code>，也就是 <code class="t-ink">(bsz, 129, ...)</code>。</li>
+<li><span class="mk s-enc"></span>第 327–330 行过 12 层编码器再归一化。</li>
+<li><span class="mk s-enc"></span>第 333 行返回四样：编码器输出、原始编号标签、丢弃掩码、全部掩码。</li>
+</ul>
+<div class="note n-enc"><p class="lbl">NOTE</p><p>编码器看到的东西：类槽 + 128 个没被丢的 token。这 128 个里面，一部分是真实编号，一部分已经是 mask 编号（因为遮盖集合比丢弃集合大）。README 里「编码器固定丢掉 50% 的位置」说的就是这 128。</p></div>
+</section>
+<section class="sec" id="fdec">
+<table class="sechead" role="presentation"><tr><td class="sno t-dec">11</td><td class="stt"><h2>forward_decoder</h2><p class="smeta"><span class="sw s-dec"></span>文件行 335–367 行　·　解码器</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-dec"></span>代码 1/1　·　行 335–367　·　解码器</p>
+<pre>x = self.<span class="t-kw">decoder_embed</span>(x)
+
+<span class="t-kw">if</span> self.<span class="t-kw">pad_with_cls_token</span>:
+    <span class="t-kw">mask_tokens</span> = x[:, 0:1].repeat(1, <span class="t-kw">token_all_mask</span>.shape[1], 1)
+<span class="t-kw">else</span>:
+    <span class="t-kw">mask_tokens</span> = self.<span class="t-kw">mask_token</span>.repeat(<span class="t-kw">token_all_mask</span>.shape[0], <span class="t-kw">token_all_mask</span>.shape[1], 1)
+
+<span class="t-kw">x_after_pad</span> = <span class="t-kw">mask_tokens</span>.clone()
+<span class="t-kw">x_after_pad</span>[(1 - <span class="t-kw">token_drop_mask</span>).nonzero(<span class="t-kw">as</span>_tuple=<span class="t-kw">True</span>)] = x.reshape(x.shape[0] * x.shape[1], x.shape[2])
+<span class="t-kw">x_after_pad</span> = t<span class="t-kw">or</span>ch.where(<span class="t-kw">token_all_mask</span>.unsqueeze(-1).bool(), <span class="t-kw">mask_tokens</span>, <span class="t-kw">x_after_pad</span>)
+
+x = <span class="t-kw">x_after_pad</span> + self.<span class="t-kw">decoder_pos_embed_learned</span>
+
+<span class="t-kw">for</span> blk <span class="t-kw">in</span> self.<span class="t-kw">decoder_blocks</span>:
+    x = blk(x)
+
+x = self.<span class="t-kw">decoder_norm</span>(x)
+
+<span class="t-kw">if</span> self.l<span class="t-kw">in</span>ear_head:
+    <span class="t-kw">return</span> self.<span class="t-kw">token_classifier</span>(x)
+
+<span class="t-kw">word_embeddings</span> = self.<span class="t-kw">token_emb</span>.<span class="t-kw">word_embeddings</span>.weight.data.detach()
+x = self.mlm_layer(x, <span class="t-kw">word_embeddings</span>)
+<span class="t-kw">return</span> x</pre></div>
+<ul>
+<li><span class="mk s-enc"></span>第 337 行先把 129 个编码器输出映射到解码器维度。</li>
+<li><span class="mk s-cls"></span>第 340–341 行取类槽的表示 <code class="t-ink">x[:,0:1]</code>，重复 257 份当作「填充向量」。所有被遮住的位置都用它填。</li>
+<li><span class="mk s-cls"></span>第 346 行先把整个序列填成类槽表示。</li>
+<li><span class="mk s-mask"></span>第 347 行把编码器留下来的那 129 个输出放回它们原来的位置（<code class="t-mask">1 - token_drop_mask</code> 就是保留位置）。</li>
+<li><span class="mk s-mask"></span>第 349 行是关键第二步：凡是 <code class="t-mask">token_all_mask</code> 为 1 的位置，重新盖回填充向量。这处理的是「没被编码器丢掉、但属于遮盖集合」的那些位置。</li>
+<li><span class="mk s-dec"></span>第 352 行加上可学习的解码器位置嵌入，注意是 learned 那套。</li>
+<li><span class="mk s-dec"></span>第 355–358 行过 8 层解码器再归一化。</li>
+<li><span class="mk hole"></span>第 360–361 行是独立分类头分支，直接线性映射到 1024 类。</li>
+<li><span class="mk s-tok"></span>第 363 行是点积头分支：取出词嵌入表的权重并 <code class="t-ink">detach()</code>，让梯度不从这里回流。</li>
+</ul>
+</section>
+<section class="sec" id="floss">
+<table class="sechead" role="presentation"><tr><td class="sno t-loss">12</td><td class="stt"><h2>forward_loss</h2><p class="smeta"><span class="sw s-loss"></span>文件行 369–375 行　·　损失</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-loss"></span>代码 1/1　·　行 369–375　·　损失</p>
+<pre>bsz, <span class="t-kw">seq_len</span> = <span class="t-kw">gt_indices</span>.size()
+<span class="t-kw">loss</span> = self.<span class="t-kw">criterion</span>(<span class="t-kw">logits</span>[:, 1:, :self.<span class="t-kw">codebook_size</span>].reshape(bsz*<span class="t-kw">seq_len</span>, -1), <span class="t-kw">gt_indices</span>.reshape(bsz*<span class="t-kw">seq_len</span>))
+<span class="t-kw">loss</span> = <span class="t-kw">loss</span>.reshape(bsz, <span class="t-kw">seq_len</span>)
+<span class="t-kw">loss</span> = (<span class="t-kw">loss</span> * <span class="t-kw">mask</span>[:, 1:]).sum() / <span class="t-kw">mask</span>[:, 1:].sum()
+<span class="t-kw">return</span> <span class="t-kw">loss</span></pre></div>
+<ul>
+<li><span class="mk s-tok"></span>第 372 行有三个切片动作要看清。<code class="t-tok">logits[:, 1:, ...]</code> 丢掉类槽位置；<code class="t-tok">[..., :self.codebook_size]</code> 只取前 1024 类，把类别编号和 mask 编号的 logits 扔掉，因为这里只做编号预测。然后 reshape 成 <code class="t-ink">(bsz*256, 1024)</code> 与标签对齐。</li>
+<li><span class="mk s-loss"></span>第 373 行把每个位置的损失还原成 <code class="t-ink">(bsz, 256)</code>。</li>
+<li><span class="mk s-mask"></span>第 374 行只对遮蔽位置求平均。<code class="t-mask">mask[:, 1:]</code> 对应去掉类槽后的 256 个位置。没被遮的位置不贡献损失。</li>
+</ul>
+</section>
+<section class="sec" id="ffwd">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">13</td><td class="stt"><h2>forward</h2><p class="smeta"><span class="sw s-ink"></span>文件行 377–381 行　·　整体与结构</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-ink"></span>代码 1/1　·　行 377–381　·　整体与结构</p>
+<pre><span class="t-kw">def</span> <span class="t-kw">for</span>ward(self, imgs):
+    latent, <span class="t-kw">gt_indices</span>, <span class="t-kw">token_drop_mask</span>, <span class="t-kw">token_all_mask</span> = self.<span class="t-kw">for</span>ward_<span class="t-kw">encode</span>r(imgs)
+    <span class="t-kw">logits</span> = self.<span class="t-kw">forward_decoder</span>(latent, <span class="t-kw">token_drop_mask</span>, <span class="t-kw">token_all_mask</span>)
+    <span class="t-kw">loss</span> = self.<span class="t-kw">forward_loss</span>(<span class="t-kw">gt_indices</span>, <span class="t-kw">logits</span>, <span class="t-kw">token_all_mask</span>)
+    <span class="t-kw">return</span> <span class="t-kw">loss</span>, imgs, <span class="t-kw">token_all_mask</span></pre></div>
+<p>把三步串起来，返回损失、原始输入、以及遮盖掩码。<code class="t-ink">engine_pretrain.py</code> 里只取第一个 <code class="t-loss">loss</code>，后两个留给需要可视化的调用方。</p>
+</section>
+<section class="sec" id="factory">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">14</td><td class="stt"><h2>两个工厂函数</h2><p class="smeta"><span class="sw s-ink"></span>文件行 384–397 行　·　整体与结构</p></td></tr></table>
+<div class="code">
+<p class="codebar"><span class="sw s-ink"></span>代码 1/1　·　行 384–397　·　整体与结构</p>
+<pre><span class="t-kw">def</span> mage_vit_b<span class="t-kw">as</span>e_patch16(**kwargs):
+    model = M<span class="t-kw">as</span>kedGenerativeEncoderViT(
+        patch_size=16, <span class="t-kw">embed_dim</span>=768, depth=12, <span class="t-kw">num_heads</span>=12,
+        <span class="t-kw">decoder_embed_dim</span>=768, <span class="t-kw">decoder_depth</span>=8, <span class="t-kw">decoder_num_heads</span>=16,
+        <span class="t-kw">mlp_ratio</span>=4, n<span class="t-kw">or</span>m_layer=partial(nn.LayerN<span class="t-kw">or</span>m, eps=1e-6), **kwargs)
+    <span class="t-kw">return</span> model</pre></div>
+<ul>
+<li><span class="mk s-enc"></span>Base 版：编码器 12 层、12 头、隐层 768；解码器 8 层、16 头、768 维。</li>
+<li><span class="mk s-enc"></span>Large 版（392–397 行）：编码器 24 层、16 头、1024 维；解码器 8 层、16 头、1024 维。</li>
+<li><span class="mk hole"></span><code class="t-ink">main_pretrain.py</code> 第 235 行用 <code class="t-ink">models_mage.__dict__[args.model](...)</code> 按名字取函数，默认就是 <code class="t-ink">mage_vit_large_patch16</code>。</li>
+</ul>
+</section>
+<section class="sec" id="keypoints">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">15</td><td class="stt"><h2>这一篇的要点</h2><p class="smeta"><span class="sw s-ink"></span>整体与结构</p></td></tr></table>
+<table class="kpt" role="presentation">
+<tr><td class="kn t-ext">01</td><td class="kt"><span class="mk s-ext"></span>模型全程在编号空间工作，VQGAN 冻结，像素从来不进 Transformer。</td></tr>
+<tr><td class="kn t-mask">02</td><td class="kt"><span class="mk s-mask"></span>词表 2025 = 1024 编号 + 1000 类别 + 1 mask，说明它同时兼容生成和分类。</td></tr>
+<tr><td class="kn t-mask">03</td><td class="kt"><span class="mk s-mask"></span>遮挡比例每步从截断正态抽一个，<code class="t-mask">mask_ratio_min</code> 决定编码器固定丢多少（默认 128/256）。</td></tr>
+<tr><td class="kn t-tok">04</td><td class="kt"><span class="mk s-tok"></span>分类头有两条路：点积（<code class="t-ink">MlmLayer</code>，权重就是词表）和独立线性层，对应 README 4.1 的两种组合。</td></tr>
+<tr><td class="kn t-leg">05</td><td class="kt"><span class="mk s-leg"></span><code class="t-leg">patch_embed</code>、<code class="t-leg">pos_embed</code>、<code class="t-dec">decoder_pos_embed</code>、<code class="t-leg">mask_token</code>、<code class="t-leg">decoder_pred</code> 是从 MAE 继承的遗留结构，前向里不走。</td></tr>
+</table>
+</section>
+<section class="sec" id="diagrams">
+<table class="sechead" role="presentation"><tr><td class="sno t-ink">16</td><td class="stt"><h2>架构图（mermaid）</h2><p class="smeta"><span class="sw s-ink"></span>整体与结构</p></td></tr></table>
+<h3 class="h3">1. 整体数据流（预训练）</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 1</span>图 1 · 预训练整体数据流</p>
+<img src="../assets/fig-light/fig1.png" width="1625" height="1598" alt="图 1 · 预训练整体数据流">
+<p class="figmeta">1625 × 1598 px　·　显示比例 0.51×</p>
+</figure>
+<h3 class="h3">2. forward_encoder 内部</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 2</span>图 2 · forward_encoder 内部流程</p>
+<img src="../assets/fig-light/fig2.png" width="1640" height="1682" alt="图 2 · forward_encoder 内部流程">
+<p class="figmeta">1640 × 1682 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">3. forward_decoder 内部</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 3</span>图 3 · forward_decoder 内部流程</p>
+<img src="../assets/fig-light/fig3.png" width="1640" height="1355" alt="图 3 · forward_decoder 内部流程">
+<p class="figmeta">1640 × 1355 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">4. forward_loss（只监督遮盖位置）</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 4</span>图 4 · 损失只作用在被遮盖的位置</p>
+<img src="../assets/fig-light/fig4.png" width="1640" height="208" alt="图 4 · 损失只作用在被遮盖的位置">
+<p class="figmeta">1640 × 208 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">5. 两种分类头的对比</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 5</span>图 5 · 点积头与独立分类头</p>
+<img src="../assets/fig-light/fig5.png" width="1640" height="218" alt="图 5 · 点积头与独立分类头">
+<p class="figmeta">1640 × 218 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">6. models_mage.py 的类结构</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 6</span>图 6 · 类结构与组合关系</p>
+<img src="../assets/fig-light/fig6.png" width="1640" height="919" alt="图 6 · 类结构与组合关系">
+<p class="figmeta">1640 × 919 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">7. 下游分类路径</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 7</span>图 7 · 微调与线性探测的下游路径</p>
+<img src="../assets/fig-light/fig7.png" width="1640" height="1071" alt="图 7 · 微调与线性探测的下游路径">
+<p class="figmeta">1640 × 1071 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">8. 一个预训练 step 的时序</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 8</span>图 8 · 预训练单步时序</p>
+<img src="../assets/fig-light/fig8.png" width="1640" height="839" alt="图 8 · 预训练单步时序">
+<p class="figmeta">1640 × 839 px　·　显示比例 0.50×</p>
+</figure>
+<h3 class="h3">9. 三个入口脚本的分工</h3>
+<figure class="fig">
+<p class="figcap"><span class="fno">FIG 9</span>图 9 · 三个入口脚本的分工</p>
+<img src="../assets/fig-light/fig9.png" width="1640" height="503" alt="图 9 · 三个入口脚本的分工">
+<p class="figmeta">1640 × 503 px　·　显示比例 0.50×</p>
+</figure>
+<p class="tip">图中所有方框均由浏览器内的 mermaid 实时渲染。若在邮件客户端里看不到图，请把 HTML 下载后用浏览器打开。</p>
+</section>
+</main>
+<footer class="foot">
+<p class="fl">MAGE 主模型讲解 · models_mage.py  |  仓库 LTH14/mage  |  2026-09-29</p>
+<p class="fr">MAGE 源码逐读 · 第 1 篇 / 共 5 篇 · 下一篇：下游分类 models_vit_mage.py</p>
+</footer>
+</div></body></html>

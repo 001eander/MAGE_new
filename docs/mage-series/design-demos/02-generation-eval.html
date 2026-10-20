@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAGE 生成与评测 · MAGE 源码逐读 第 2 篇 / 共 5 篇</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:#fff;
+  color:#0a0a0a;
+  font-size:17px;
+  line-height:1.9;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",
+    "Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
+  -webkit-text-size-adjust:100%;
+  text-rendering:optimizeLegibility;
+}
+.page{max-width:880px;margin:0 auto;padding:0 28px}
+
+/* ---- 巨型字层：显示体。西文走 Archivo/Anton，中文回落到系统黑体 + 收紧字距 ---- */
+h1,h2,.big,.sec-no,.knum,.rm .n,.device .cap{
+  font-family:"Archivo Expanded","Archivo Black","Archivo",Anton,"Helvetica Neue",Helvetica,
+    -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-weight:900;
+  letter-spacing:-.04em;
+}
+p{margin:0 0 1.3em}
+strong{font-weight:800;box-shadow:inset 0 -.42em 0 #f3c7cf}
+code{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:.84em;background:#f2f2f2;border:1px solid #e3e3e3;padding:1px 4px;
+}
+a{color:inherit}
+
+/* ---- 报头 ---- */
+.masthead{
+  border-top:7px solid #0a0a0a;border-bottom:1px solid #0a0a0a;
+  display:flex;justify-content:space-between;align-items:baseline;gap:16px;
+  padding:13px 0 11px;font-size:12px;letter-spacing:.16em;
+}
+.masthead .series{font-weight:800}
+.masthead .ep{color:#c8102e;font-weight:800;white-space:nowrap}
+
+/* ---- 首屏 ---- */
+.hero{padding:64px 0 72px}
+.eyebrow{font-size:12px;letter-spacing:.2em;color:#5a5a5a;margin:0 0 22px}
+.eyebrow b{color:#c8102e}
+h1{font-size:clamp(38px,7.4vw,94px);line-height:.96;margin:0 0 8px;letter-spacing:-.05em}
+.rule{height:1px;background:#0a0a0a;margin:34px 0 0}
+.hero-split{display:grid;grid-template-columns:1.25fr 1fr;gap:44px;align-items:start;margin-top:34px}
+.lead{font-size:19px;line-height:1.72;margin:0}
+.meta{font-size:12.5px;color:#5a5a5a;line-height:1.85;margin:18px 0 0}
+
+/* ---- 编号空间装置 ---- */
+.device{border:1px solid #0a0a0a;padding:12px}
+.device .cells{display:grid;grid-template-columns:repeat(16,1fr);gap:2px;height:268px}
+.device i{display:block;border:1px solid #dcdcdc;background:#fff}
+.device i.d{background:#0a0a0a;border-color:#0a0a0a}
+.device i.o{
+  background:#fff;border-color:#0a0a0a;
+  background-image:repeating-linear-gradient(45deg,#0a0a0a 0 1px,#fff 1px 3px);
+}
+.device i.a{background:#0a0a0a;border-color:#0a0a0a}
+.device i.b{
+  background:#fff;border-color:#0a0a0a;
+  background-image:repeating-linear-gradient(45deg,#0a0a0a 0 1px,#fff 1px 3px);
+}
+.device .cap{font-size:12px;letter-spacing:.02em;font-weight:800;margin:12px 0 6px;
+  line-height:1.6;font-family:inherit}
+.device .lg{font-size:12px;line-height:1.85;color:#3a3a3a;margin:8px 0 0;padding-top:8px;
+  border-top:1px solid #e3e3e3}
+.device .lg span{display:block}
+.device .sw{display:inline-block;width:9px;height:9px;margin-right:6px;vertical-align:1px;
+  border:1px solid #0a0a0a}
+.device .sw.d{background:#0a0a0a}
+.device .sw.o{background-image:repeating-linear-gradient(45deg,#0a0a0a 0 1px,#fff 1px 3px)}
+.device .sw.a{background:#0a0a0a}
+.device .sw.b{background-image:repeating-linear-gradient(45deg,#0a0a0a 0 1px,#fff 1px 3px)}
+
+/* ---- 系列路线 ---- */
+.roadmap{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid #0a0a0a}
+.roadmap .rm{border-right:1px solid #0a0a0a;padding:16px 13px 18px}
+.roadmap .rm:last-child{border-right:0}
+.roadmap .n{font-size:19px;line-height:1;color:#c8102e;display:block;margin-bottom:12px}
+.roadmap .lbl{font-size:12.5px;line-height:1.6;display:block}
+.roadmap .st{font-size:12px;letter-spacing:.14em;color:#5a5a5a;display:block;margin-top:9px}
+.roadmap .now{background:#0a0a0a;color:#fff}
+.roadmap .now .n{color:#fff}
+.roadmap .now .st{color:#c9c9c9}
+.roadmap-cap{font-size:12px;letter-spacing:.16em;color:#5a5a5a;margin:0 0 12px}
+
+/* ---- 章目 ---- */
+.toc{padding:88px 0 0}
+.toc .h{font-size:12px;letter-spacing:.2em;color:#5a5a5a;margin:0 0 14px}
+.toclist{list-style:none;margin:0;padding:0}
+.toclist li{border-top:1px solid #e4e4e4}
+.toclist li:first-child{border-top:3px solid #0a0a0a}
+.toclist a{display:grid;grid-template-columns:54px 1fr;gap:14px;padding:11px 0;
+  text-decoration:none;font-size:16px;line-height:1.5}
+.toclist .n{font-size:12.5px;letter-spacing:.1em;color:#c8102e;font-weight:800;
+  padding-top:3px}
+.tocnote{font-size:12.5px;line-height:1.85;color:#5a5a5a;margin:22px 0 0;
+  padding-top:14px;border-top:1px solid #e4e4e4}
+
+/* ---- 章节头 ---- */
+.sec{padding-top:104px}
+.sec-head{display:grid;grid-template-columns:112px 1fr;gap:20px;
+  border-top:3px solid #0a0a0a;padding-top:18px;margin-bottom:44px}
+.sec-no{font-size:clamp(40px,6vw,70px);line-height:1;color:#c8102e;
+  letter-spacing:-.06em;display:block}
+.sec-head h2{font-size:clamp(26px,4.1vw,44px);line-height:1.1;margin:6px 0 0;
+  letter-spacing:-.035em;word-break:break-word}
+.sec-line{font-size:12px;letter-spacing:.18em;color:#5a5a5a;margin:14px 0 0}
+
+/* ---- 正文块 ---- */
+ul.doc{list-style:none;margin:0 0 1.4em;padding:0}
+ul.doc li{display:grid;grid-template-columns:13px 1fr;gap:14px;margin-bottom:13px;
+  font-size:16.5px;line-height:1.85}
+ul.doc li .mk{border:1.5px solid #0a0a0a;height:13px;margin-top:.62em}
+ul.doc li .mk.f{background:#0a0a0a}
+ol.doc{list-style:none;margin:0;padding:0}
+ol.doc li{display:grid;grid-template-columns:76px 1fr;gap:18px;padding:22px 0;
+  border-top:1px solid #e4e4e4;font-size:17px;line-height:1.8}
+ol.doc li:first-child{border-top:3px solid #0a0a0a}
+ol.doc .knum{font-size:clamp(26px,3.2vw,38px);line-height:1;color:#0a0a0a;
+  letter-spacing:-.05em;padding-top:2px}
+h4{font-size:13px;font-weight:800;letter-spacing:.14em;margin:52px 0 18px;
+  padding-top:12px;border-top:1px solid #0a0a0a;line-height:1.6}
+h3{font-size:15px;font-weight:800;letter-spacing:.06em;margin:62px 0 20px;
+  padding-bottom:10px;border-bottom:1px solid #0a0a0a;line-height:1.6}
+
+/* ---- 代码 ---- */
+.code{margin:0 0 36px;border:1px solid #0a0a0a}
+.code .hd{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:baseline;
+  background:#0a0a0a;color:#fff;padding:8px 14px;font-size:12px;letter-spacing:.16em}
+.code .hd .idx{color:#c9c9c9}
+.code pre{margin:0;padding:17px 16px;background:#f7f7f7;
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:12.5px;line-height:1.72;white-space:pre;overflow-x:auto;tab-size:4;
+  color:#0a0a0a}
+.code pre .k{font-weight:800;color:#0a0a0a}
+.code pre .n{font-weight:800;color:#0a0a0a}
+.code pre .s{color:#c8102e}
+.code pre .c{color:#6a6a6a;font-style:italic}
+
+/* ---- 注释块 ---- */
+.note{display:grid;grid-template-columns:76px 1fr;gap:18px;border-top:1px solid #0a0a0a;
+  border-bottom:1px solid #0a0a0a;padding:22px 0;margin:0 0 36px;font-size:16px;line-height:1.8}
+.note .tag{font-size:12px;letter-spacing:.2em;color:#c8102e;font-weight:800;padding-top:5px}
+.warn{background:#0a0a0a;color:#fff;padding:28px 28px 24px;margin:0 0 36px}
+.warn .tag{font-size:12px;letter-spacing:.22em;color:#c9c9c9;font-weight:800;
+  display:block;margin-bottom:12px}
+.warn p{margin:0;font-size:16.5px;line-height:1.85}
+.warn code{background:#242424;border-color:#3d3d3d;color:#fff}
+.warn strong{box-shadow:none;font-weight:800;color:#fff}
+.tip{border-top:1px solid #0a0a0a;padding-top:14px;margin:0 0 34px;font-size:13px;
+  line-height:1.8;color:#5a5a5a}
+
+/* ---- 流程条 ---- */
+.flowline{border-top:1px solid #0a0a0a;border-bottom:1px solid #0a0a0a;
+  padding:18px 0;margin:0 0 36px;font-size:15px;line-height:2.1;word-break:break-word}
+.flowline .ar{color:#c8102e;font-weight:800;padding:0 7px}
+
+/* ---- 图 ---- */
+figure.fig{margin:16px 0 52px}
+figure.fig img{display:block;width:100%;height:auto;border:1px solid #e6e6e6;background:#fff}
+figure.fig.tall img{margin:0 auto}
+figcaption{font-size:12.5px;letter-spacing:.04em;color:#5a5a5a;margin-top:12px;
+  padding-top:9px;border-top:1px solid #e4e4e4}
+figure.fig .cr{display:block;margin-top:5px;font-size:11.5px;color:#8a8a8a;
+  letter-spacing:.06em}
+figure.fig.plate img{border:1px solid #0a0a0a}
+
+/* ---- 附录 ---- */
+.apx{padding-top:96px}
+.apx details{border:1px solid #0a0a0a;padding:14px 16px}
+.apx summary{font-size:13px;font-weight:800;letter-spacing:.14em;cursor:pointer}
+.apx .item{border-top:1px solid #e4e4e4;padding:16px 0 6px;margin-top:16px}
+.apx .item:first-of-type{border-top:0}
+.apx .item .lb{font-size:12.5px;color:#5a5a5a;letter-spacing:.04em;margin:0 0 8px}
+.apx pre{margin:0;padding:12px;background:#f7f7f7;border:1px solid #e6e6e6;
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:#3a3a3a}
+
+/* ---- 页脚 ---- */
+.footer{background:#0a0a0a;color:#fff;margin-top:110px;padding:44px 0 52px}
+.footer .fp{font-size:12px;letter-spacing:.16em;color:#c9c9c9;margin:0 0 14px}
+.footer .ft{font-size:clamp(20px,3vw,26px);line-height:1.25;margin:0 0 18px}
+.footer .fm{font-size:12.5px;line-height:1.9;color:#c9c9c9;margin:0;padding-top:16px;
+  border-top:1px solid #3d3d3d}
+
+/* ---- 窄屏重排 ---- */
+@media (max-width:700px){
+  body{font-size:16px}
+  .page{padding:0 18px}
+  .hero{padding:44px 0 52px}
+  .hero-split{grid-template-columns:1fr;gap:34px}
+  .device .cells{height:210px}
+  .roadmap{grid-template-columns:1fr}
+  .roadmap .rm{border-right:0;border-bottom:1px solid #0a0a0a;padding:13px 12px 15px}
+  .roadmap .rm:last-child{border-bottom:0}
+  .roadmap .n{font-size:17px;margin-bottom:7px}
+  .sec{padding-top:74px}
+  .sec-head{grid-template-columns:1fr;gap:6px;margin-bottom:34px}
+  .sec-no{font-size:34px}
+  ul.doc li{grid-template-columns:11px 1fr;gap:12px;font-size:16px}
+  ul.doc li .mk{height:11px}
+  ol.doc li{grid-template-columns:56px 1fr;gap:14px}
+  .note{grid-template-columns:1fr;gap:8px}
+  .code pre{font-size:12px;line-height:1.75;padding:14px 12px;white-space:pre;
+    overflow-x:auto;overflow-y:hidden}
+  .code .hd{letter-spacing:.1em}
+  .apx pre{font-size:11.5px}
+}
+</style>
+</head>
+<body>
+<div class="page"><header class="masthead"><span class="series">MAGE 源码逐读</span><span class="ep">第 2 篇 / 共 5 篇</span></header><section class="hero"><p class="eyebrow">MAGE 源码逐读 · <b>第 2 篇 / 共 5 篇</b> · 生成与评测</p><h1>MAGE<br>生成与评测</h1><div class="rule"></div><div class="hero-split"><div><p class="lead">代码文件：eval_exp.py 与 util/exp_*.py（从 mask_token 到 metrics.json）</p><p class="meta">仓库：LTH14/mage · 实验分支：001eander/MAGE_new  |  生成日期：2026-09-29</p></div><div class="device"><p class="cap">半 A 半 B：16 × 16 的拼法</p><div class="cells"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i><i class="b"></i></div><p class="lg"><span><span class="sw a"></span>左 8×16 出自 A</span><span><span class="sw b"></span>右 8×16 出自 B</span><span>接缝两侧最容易被换成相近的编号</span><span>A、B 固定为 n=2 的那两张图</span></p></div></div></section><p class="roadmap-cap">系列 5 篇 · 进度</p><div class="roadmap"><div class="rm"><span class="n">01</span><span class="lbl">主模型 models_mage.py</span><span class="st">已发出</span></div><div class="rm now"><span class="n">02</span><span class="lbl">生成与评测 eval_exp.py</span><span class="st">本篇</span></div><div class="rm"><span class="n">03</span><span class="lbl">预训练引擎 engine_pretrain.py</span><span class="st">待写</span></div><div class="rm"><span class="n">04</span><span class="lbl">微调与线性探测 engine_finetune.py</span><span class="st">待写</span></div><div class="rm"><span class="n">05</span><span class="lbl">入口脚本 main_*.py</span><span class="st">待写</span></div></div><nav class="toc"><p class="h">章目 · 15 节</p><ul class="toclist"><li><a href="#overview"><span class="n">01</span><span>这一篇讲什么</span></a></li><li><a href="#samplers"><span class="n">02</span><span>两个采样器</span></a></li><li><a href="#topk"><span class="n">03</span><span>mask_by_random_topk</span></a></li><li><a href="#loop"><span class="n">04</span><span>循环体逐步拆解</span></a></li><li><a href="#uncover1"><span class="n">05</span><span>uncover1：一步只揭一个</span></a></li><li><a href="#oneshot"><span class="n">06</span><span>oneshot：一次全揭只对答案</span></a></li><li><a href="#data"><span class="n">07</span><span>exp_data.py：冻结的子集与默认值</span></a></li><li><a href="#nearest"><span class="n">08</span><span>nearest_token：双向 Hamming 最近邻</span></a></li><li><a href="#coverage"><span class="n">09</span><span>覆盖率与匹配误差的定义</span></a></li><li><a href="#wrongtoken"><span class="n">10</span><span>猜错的编号离正确答案有多远</span></a></li><li><a href="#grid"><span class="n">11</span><span>拼图：三列各自是什么</span></a></li><li><a href="#fid"><span class="n">12</span><span>fid_two_folders：同一个函数算两种 FID</span></a></li><li><a href="#metrics"><span class="n">13</span><span>metrics.json 的模式与校验</span></a></li><li><a href="#memory"><span class="n">14</span><span>内存纪律：五万张图怎么办</span></a></li><li><a href="#keypoints"><span class="n">15</span><span>这一篇的要点</span></a></li></ul><p class="tocnote">代码保持原文换行，不加行号，避免与正文里的文件行号引用打架；超长行在代码块内部横向滚动，不做折行改写。</p></nav><section class="sec" id="overview"><div class="sec-head"><span class="sec-no">01</span><div><h2>这一篇讲什么</h2></div></div><p>第 1 篇讲的是模型怎么把编号猜回来。这一篇讲另一半：怎么让它从「一个编号都看不见」开始，一步步把 256 个编号补出来，以及怎么把「生成得好不好」变成一组可以核对的数字。</p><p>两条线。生成线在 <code>gen_img_uncond.py</code>（论文的独立生成脚本）和 <code>eval_exp.py</code> 的 <code>generate_batch</code> 里；评测线在 <code>util/exp_fid.py</code> 和 <code>util/exp_metrics.py</code> 里。评测线要做的事，是把 README 第 2.2 节列的那四样——FID、覆盖率、平均匹配误差、图像质量——逐一落成文件。</p><div class="flowline">全遮的 256 个位置<span class="ar">→</span>每步预测并揭一部分<span class="ar">→</span>编号<span class="ar">→</span>VQGAN 解码<span class="ar">→</span>图 ／ 同一批图<span class="ar">→</span>FID、覆盖率、匹配误差、拼图</div><p>这一篇和 README 三处直接对应：第 2.2 节的指标定义、第 4.3 节的半 A 半 B、第 4.5 节的量化误差。代码里每一个数字都能指回那几节的要求，反过来也一样。</p><h4>先说明几个词</h4><ul class="doc"><li><span class="mk f"></span><span><strong>一次全揭</strong>（<code>oneshot</code>）：256 个位置全是 <code>mask_token</code>，模型只前向一次，取最大概率。这不是采样，是探测模型「一眼看全部」能猜对多少。</span></li><li><span class="mk"></span><span><strong>最近邻</strong>：编号空间里逐位比较，数有多少个位置不一样。256 维上的 Hamming 距离。</span></li><li><span class="mk f"></span><span><strong>相对自己</strong>：拿模型对某张训练图的预测，和这张训练图自己的编号比。对应 README 第 2.2 节那栏「一次揭开全部遮挡时猜对了多少」。</span></li><li><span class="mk"></span><span><strong>参照集</strong>：算 FID 时当基准的那批图。Tiny 子上就用 Tiny 的验证集，放大到 256、和训练时同一套预处理。</span></li></ul><div class="note"><span class="tag">注</span><div>这一篇只讲代码怎么组织，不放任何实验数字。本地没有 <code>outputs/</code> 和 <code>data/</code>，跑在集群上；文里的图都是从代码逻辑和公式直接推出来的，不是结果截图。</div></div></section><section class="sec" id="samplers"><div class="sec-head"><span class="sec-no">02</span><div><h2>两个采样器</h2><p class="sec-line">eval_exp.py 513–536</p></div></div><p>同一个仓库里有两套采样循环。<code>gen_img_uncond.py</code> 是论文的独立生成脚本，界面就三个旋钮：温度、步数、生成多少张。<code>eval_exp.py</code> 里那一套多了一个开关，把「怎么揭」也变成参数。</p><div class="code"><div class="hd"><span>Python · 两个采样器</span><span class="idx">01 / 22</span></div><pre><span class="k">if</span> schedule == <span class="s">'uncover1'</span>:
+    gen_iters = 256
+    gen_note = (
+        <span class="s">'uncover1: each step commits the most-confident unknown position; '</span>
+        <span class="s">'committed ids stay visible (no remask). Token sample/argmax matches '</span>
+        <span class="s">'--sample/--argmax. Not the paper cosine remask sampler.'</span>
+    )
+<span class="k">else</span>:
+    gen_iters = args.num_iter</pre></div><p>这段注释把两种循环的区别写得很直白：<code>uncover1</code> 每一步只把最有把握的那一个位置定下来，定下来就不再改；论文那套是每一步按置信度遮回一批，已经猜对的位置也可能被重新盖住。</p><figure class="fig"><img src="../assets/ep02/fig-ink/fig1.png" alt="图 1 · cosine 采样器一次完整生成" width="1665" height="1494"><figcaption>图 1 · cosine 采样器一次完整生成</figcaption></figure><p>值得留意的是编码器那一步。生成的时候没有任何位置被「丢掉」，<code>token_drop_mask</code> 是整个零张量，所以编码器看到的是类槽加上全部 256 个位置——没被遮的是真实编号，被遮的是 <code>mask_token</code>。这和第 1 篇里训练时的行为不一样：训练时编码器固定丢掉一半的位置，生成时一个都不丢。</p><figure class="fig"><img src="../assets/ep02/fig-ink/fig2.png" alt="图 2 · 两种采样器的差别只在揭开次序" width="1680" height="956"><figcaption>图 2 · 两种采样器的差别只在揭开次序</figcaption></figure><div class="warn"><span class="tag">敲黑板</span><p>README 第 4.3 节专门写了一句：论文默认的 12 步生成会把已经猜对的位置再遮回去，那不是半 A 半 B 实验。<code>--schedule uncover1</code> 就是为这件事准备的开关，它<strong>不做重遮</strong>，所以「一步只揭一个」这条路线才做得干净。拿默认的 12 步生成去代替半 A 半 B，测到的会是重遮带来的抖动。</p></div></section><section class="sec" id="topk"><div class="sec-head"><span class="sec-no">03</span><div><h2>mask_by_random_topk</h2><p class="sec-line">eval_exp.py 276–282</p></div></div><p>遮回哪些位置，由一个九行的函数决定。两个版本（<code>gen_img_uncond.py</code> 和 <code>eval_exp.py</code>）内容一致，只是设备写法不同。</p><div class="code"><div class="hd"><span>Python · mask_by_random_topk</span><span class="idx">02 / 22</span></div><pre><span class="k">def</span> <span class="n">mask_by_random_topk</span>(mask_len, probs, temperature=1.0):
+    mask_len = mask_len.squeeze()
+    confidence = torch.log(probs) + torch.Tensor(
+        temperature * np.random.gumbel(size=probs.shape)).to(probs.device)
+    sorted_confidence, _ = torch.sort(confidence, axis=-1)
+    cut_off = sorted_confidence[:, mask_len.long() - 1:mask_len.long()]
+    <span class="k">return</span> confidence &lt;= cut_off</pre></div><ul class="doc"><li><span class="mk f"></span><span>第 2 行 <code>log(probs)</code> 把概率换成对数概率。概率越低的候选，对数越负，排到后面越容易被遮。</span></li><li><span class="mk"></span><span>第 3–4 行加上 Gumbel 噪声。<strong>这一步是「随机」的来源</strong>：不加噪声，被遮的永远是最没把握的那些，采样会退化成贪心；加了噪声，排在第 mask_len 名附近的候选每次抽到的顺序都不一样。</span></li><li><span class="mk f"></span><span>第 5–6 行不排序后逐位取，而是先排序、取第 <code>mask_len</code> 小的值当阈值，再拿阈值去筛。这样输出是一个布尔矩阵，形状和输入一致，不会因为并列值多选出或少选出几个。</span></li><li><span class="mk"></span><span>噪声幅度由调用方给：<code>temperature * (1 - ratio)</code>。越接近结束，温度越低，噪声越小，最后几步基本按置信度落子。</span></li></ul><figure class="fig"><img src="../assets/ep02/fig-ink/fig3.png" alt="图 3 · mask_by_random_topk：先加噪再取阈值" width="1680" height="767"><figcaption>图 3 · mask_by_random_topk：先加噪再取阈值</figcaption></figure><div class="tip">这个函数在 <code>gen_img_uncond.py</code> 里用 <code>.cuda()</code> 写死了设备，在 <code>eval_exp.py</code> 里改成了 <code>.to(probs.device)</code>。后者才能在 CPU 上跑通——测试或冒烟脚本会用到。</div></section><section class="sec" id="loop"><div class="sec-head"><span class="sec-no">04</span><div><h2>循环体逐步拆解</h2><p class="sec-line">eval_exp.py 285–324</p></div></div><p>把 <code>generate_batch</code> 的循环体按执行顺序摊开，一共六件事。</p><div class="code"><div class="hd"><span>Python · 循环体逐步拆解</span><span class="idx">03 / 22</span></div><pre><span class="k">for</span> step <span class="k">in</span> range(num_iter):
+    cur_ids = token_indices.clone().long()
+    logits = mage_codebook_logits(model, cur_ids)
+    <span class="k">if</span> argmax:
+        sampled_ids = torch.argmax(logits, dim=-1)
+    <span class="k">else</span>:
+        sampled_ids = torch.distributions.categorical.Categorical(
+            logits=logits).sample()
+    unknown_map = (cur_ids == mask_token_id)
+    sampled_ids = torch.where(unknown_map, sampled_ids, cur_ids)
+    ratio = 1.0 * (step + 1) / num_iter
+    mask_ratio = np.cos(math.pi / 2.0 * ratio)</pre></div><ol class="doc"><li><span class="knum">01</span><span><code>cur_ids</code> 存一份本轮开始时的编号。后面用它算 <code>unknown_map</code>，也就是「这一步之前还看不见的位置」。</span></li><li><span class="knum">02</span><span><code>mage_codebook_logits</code> 把当前编号补上类槽、算 <code>token_all_mask</code>，走一遍编码器和解码器，返回 <code>(B, 256, 1024)</code>。注意这里只截前 1024 类，类别编号和 mask 编号的 logits 全丢掉。</span></li><li><span class="knum">03</span><span>取编号的方式由 <code>--argmax</code> 决定：<code>argmax</code> 是每步取最大概率，<code>Categorical(...).sample()</code> 是按概率随机抽。README 第 2.2 节要求把「取最大概率还是随机采样」写进 <code>metrics.json</code>，对应的就是这一行。</span></li><li><span class="knum">04</span><span><code>torch.where(unknown_map, sampled_ids, cur_ids)</code> 保证已经知道的位置不被新预测覆盖。这一句让「已知」变成单向的。</span></li><li><span class="knum">05</span><span><code>ratio</code> 从 <code>1/num_iter</code> 走到 1，<code>mask_ratio</code> 是它的余弦。这是论文的调度：开头几乎全遮，结尾几乎全揭。</span></li></ol><figure class="fig"><img src="../assets/ep02/fig-ink/fig4.png" alt="图 4 · mask_len = floor(256 · cos(π/2 · (step+1)/num_iter))" width="1680" height="534"><figcaption>图 4 · mask_len = floor(256 · cos(π/2 · (step+1)/num_iter))</figcaption></figure><h4>mask_len 的两道夹取</h4><div class="code"><div class="hd"><span>Python · 循环体逐步拆解</span><span class="idx">04 / 22</span></div><pre>mask_len = torch.tensor(
+    [np.floor(unknown_number_in_the_beginning * mask_ratio)],
+    device=device)
+mask_len = torch.maximum(
+    torch.tensor([1.0], device=device),
+    torch.minimum(torch.sum(unknown_map, dim=-1, keepdims=<span class="k">True</span>) - 1, mask_len))</pre></div><ul class="doc"><li><span class="mk f"></span><span>基数是 <code>unknown_number_in_the_beginning</code>，写死的 256，<strong>不是当前还剩多少未知</strong>。所以调度曲线不受中途状态影响，每一步留多少完全由步数决定。</span></li><li><span class="mk"></span><span>上限是 <code>sum(unknown) - 1</code>：这一步至少得揭掉一个位置，否则循环可能原地打转。</span></li><li><span class="mk f"></span><span>下限是 1：至少留一个位置给下一步。所以最后一步之后，循环退出时的 <code>sampled_ids</code> 才是完整结果。</span></li></ul><div class="note"><span class="tag">注</span><div><code>token_indices</code> 每轮都在被遮回和揭开的反复中变化，但最终拿去解码的是 <code>sampled_ids</code>——那个没被重新遮过的版本。两行代码差一个字，含义完全不同。</div></div></section><section class="sec" id="uncover1"><div class="sec-head"><span class="sec-no">05</span><div><h2>uncover1：一步只揭一个</h2><p class="sec-line">eval_exp.py 327–359</p></div></div><p>这个循环短，但把「不重遮」这件事做到了底。</p><div class="code"><div class="hd"><span>Python · uncover1：一步只揭一个</span><span class="idx">05 / 22</span></div><pre><span class="k">for</span> step <span class="k">in</span> range(256):
+    unknown = token_indices == mask_token_id
+    <span class="k">if</span> <span class="k">not</span> bool(unknown.any()):
+        <span class="k">break</span>
+    logits = mage_codebook_logits(model, token_indices)
+    pred = torch.distributions.categorical.Categorical(logits=logits).sample()
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    conf = torch.gather(probs, dim=-1, index=pred.unsqueeze(-1)).squeeze(-1)
+    conf = conf.masked_fill(~unknown, -1.0e9)
+    pick = conf.argmax(dim=-1)
+    token_indices = token_indices.clone()
+    token_indices[batch_idx, pick] = pred[batch_idx, pick]</pre></div><ul class="doc"><li><span class="mk f"></span><span>第 2 行每轮重新算一次 <code>unknown</code>，第 3–4 行在未知清空时提前退出，所以 256 只是上界，实际步数等于需要填的位置数。</span></li><li><span class="mk"></span><span><code>conf</code> 取出被选中编号的概率，是「这一步有多有把握」的度量。</span></li><li><span class="mk f"></span><span><code>masked_fill(~unknown, -1e9)</code> 把已经揭开的那些位置压到负无穷，<code>argmax</code> 就只能在未知位置里挑。<strong>这一句替代了排序，是两种采样器在实现上最直观的分野。</strong></span></li><li><span class="mk"></span><span>落子写回的是 <code>pred[batch_idx, pick]</code>，也就是那一步真正抽到的编号，而不是最大概率的编号——<code>--sample</code> 和 <code>--argmax</code> 的区别在这里同样生效。</span></li></ul><figure class="fig"><img src="../assets/ep02/fig-ink/fig5.png" alt="图 5 · 半 A 半 B 的两种切法与两种揭法" width="1680" height="1031"><figcaption>图 5 · 半 A 半 B 的两种切法与两种揭法</figcaption></figure><p>第 4.3 节的两种揭法就是这两种循环。<code>uncover1</code> 让「补出来的编号更像 A 还是比较像 B」这个问题变得可以观察：一步一个位置地走，接缝附近如果发生替换，能看出是哪一步换的。默认的 cosine 循环一次揭一批，接缝的信息混在一整批里，看不出来。</p></section><section class="sec" id="oneshot"><div class="sec-head"><span class="sec-no">06</span><div><h2>oneshot：一次全揭只对答案</h2><p class="sec-line">eval_exp.py 237–255</p></div></div><p>README 第 2.2 节要求单独报一栏「一次揭开全部遮挡时，对训练图猜对了多少编号」。这个函数就是那一栏。</p><div class="code"><div class="hd"><span>Python · oneshot：一次全揭只对答案</span><span class="idx">06 / 22</span></div><pre><span class="k">def</span> <span class="n">oneshot_predict</span>(model, images):
+    <span class="s">""</span><span class="s">"All positions masked, nothing dropped, argmax over codebook."</span><span class="s">""</span>
+    bsz = images.size(0)
+    mask_id = model.mask_token_label
+    token_indices = mask_id * torch.ones(bsz, 256, device=device)
+    token_indices = torch.cat(
+        [torch.zeros(bsz, 1, device=device), token_indices], dim=1)
+    token_indices[:, 0] = model.fake_class_label
+    token_all_mask = torch.ones_like(token_indices, dtype=torch.float32)
+    token_all_mask[:, 0] = 0
+    token_drop_mask = torch.zeros_like(token_indices, dtype=torch.float32)
+    logits = model.forward_decoder(x, token_drop_mask, token_all_mask)
+    <span class="k">return</span> logits[:, 1:, :model.codebook_size].argmax(dim=-1)</pre></div><ul class="doc"><li><span class="mk f"></span><span>输入不是编号，是<strong>图像张量</strong>。函数里不用它们做条件，只借 <code>images.size(0)</code> 拿批量大小——模型是无条件的，生成时确实不依赖任何输入图。</span></li><li><span class="mk"></span><span><code>token_all_mask</code> 全 1、类槽位设 0，<code>token_drop_mask</code> 全 0。编码器看到类槽加 256 个 mask 编号。</span></li><li><span class="mk f"></span><span>返回 <code>argmax</code> 而不是采样。这里要的是「模型最看好哪个」，不是「抽一个看看」。</span></li><li><span class="mk"></span><span>调用方 <code>eval_exp.py</code> 拿它和 <code>encode_tokens(vqgan, batch)</code> 比，逐位算准确率。所以这一栏测的是<strong>相对自己</strong>，和最近邻那一栏不是一回事。</span></li></ul><h4>大 n 时探针集会被裁剪</h4><div class="code"><div class="hd"><span>Python · oneshot：一次全揭只对答案</span><span class="idx">07 / 22</span></div><pre>probe_file = args.probe_list <span class="k">or</span> os.path.join(splits_dir, <span class="s">'probe.txt'</span>)
+<span class="k">if</span> os.path.isfile(probe_file) <span class="k">and</span> args.n &gt;= 1000:
+    probe_rel = [p <span class="k">for</span> p <span class="k">in</span> read_list(probe_file) <span class="k">if</span> p <span class="k">in</span> set(rel_paths)]
+<span class="k">else</span>:
+    probe_rel = list(rel_paths)</pre></div><p><code>splits/probe.txt</code> 是固定的 8 张：A、B，加 n=10 里接下来的 6 张。n 小的时候直接用全部训练图；n 到 1000 以上，训练集太大，就用这 8 张固定探针。<code>if p in set(rel_paths)</code> 这一步保证探针里的图确实在这个 n 的子集里——子集是嵌套的，所以不会漏。</p></section><section class="sec" id="data"><div class="sec-head"><span class="sec-no">07</span><div><h2>exp_data.py：冻结的子集与默认值</h2><p class="sec-line">util/exp_data.py 全文</p></div></div><p>这个模块只有 145 行，但实验里所有「固定住不让动」的东西都在这里。</p><div class="code"><div class="hd"><span>Python · exp_data.py：冻结的子集与默认值</span><span class="idx">08 / 22</span></div><pre>N_VALUES = (1, 2, 10, 100, 1000, 10000)
+SPLIT_SEED = 0
+IMAGE_A = <span class="s">'train/n01443537/images/n01443537_0.JPEG'</span>
+IMAGE_B = <span class="s">'train/n01629819/images/n01629819_0.JPEG'</span>
+SOURCE_NATIVE_SIZE = 64
+TRAIN_EVAL_SIZE = 256
+FID_COMPARABLE_TO_PAPER = <span class="k">False</span>
+
+DEFAULT_TEMPERATURE = 6.0
+DEFAULT_NUM_ITER = 20
+DEFAULT_ARGMAX = <span class="k">False</span>
+DEFAULT_GEN_SEED = 0
+APPROX_COVER_MAX_ERRORS = 16
+GRID_N = 8</pre></div><ul class="doc"><li><span class="mk f"></span><span>A 和 B 是写死的两个路径，对应 <code>manifest.json</code> 里的金鱼和蝾螈。n=2 的两张就是它们，半 A 半 B 的 A、B 也是它们。README 第 2.1 节要求「n=2 的两张固定为半 A 半 B 的 A、B，不要另找两张」——用一个常量把这件事钉死。</span></li><li><span class="mk"></span><span><code>FID_COMPARABLE_TO_PAPER = False</code> 是 README 那句警告的代码版本：Tiny 原图 64×64，放大到 256 之后算出来的 FID 不能和论文的 ImageNet-256 数字比。它会被写进 <code>metrics.json</code> 的 <code>source</code> 字段，跟着结果一起走。</span></li><li><span class="mk f"></span><span><code>DEFAULT_TEMPERATURE = 6.0</code>、<code>DEFAULT_NUM_ITER = 20</code>——注意这和 <code>gen_img_uncond.py</code> 里写死的 4.5 / 12 不一样。后者是论文脚本原本的默认值，这里用的是 <code>README.official.md</code> 里类无条件生成那条命令的参数。</span></li><li><span class="mk"></span><span><code>APPROX_COVER_MAX_ERRORS = 16</code> 就是 README 说的 6.25%（16/256），「大致覆盖」的阈值。</span></li></ul><h4>两个数据集类，都不带标签</h4><div class="code"><div class="hd"><span>Python · exp_data.py：冻结的子集与默认值</span><span class="idx">09 / 22</span></div><pre><span class="k">class</span> <span class="n">ImageListDataset</span>(Dataset):
+    <span class="s">""</span><span class="s">"RGB images from a frozen relative-path list. Label is unused (always 0)."</span><span class="s">""</span>
+    <span class="k">def</span> <span class="n">__getitem__</span>(self, index):
+        img = Image.open(self.paths[index]).convert(<span class="s">'RGB'</span>)
+        <span class="k">if</span> self.transform <span class="k">is</span> <span class="k">not</span> <span class="k">None</span>:
+            img = self.transform(img)
+        <span class="k">return</span> img, 0
+
+
+<span class="k">class</span> <span class="n">TokenIndexDataset</span>(Dataset):
+    <span class="s">""</span><span class="s">"Precomputed VQGAN codebook ids [N, 256]. Label unused (always 0)."</span><span class="s">""</span></pre></div><p>两个类都返回 <code>(数据, 0)</code>。<code>ImageListDataset</code> 在构造时就把缺失的图检查掉，缺一张就报错并给出第一条缺失路径，而不是等训练跑到一半才炸。生成和评测都是无条件任务，标签确实没用，写个 0 是为了兼容 <code>DataLoader</code> 的接口。</p><div class="code"><div class="hd"><span>Python · exp_data.py：冻结的子集与默认值</span><span class="idx">10 / 22</span></div><pre><span class="k">def</span> <span class="n">default_num_images</span>(n):
+    n = int(n)
+    <span class="k">if</span> n &gt;= 10000:
+        <span class="k">return</span> 50000
+    <span class="k">return</span> max(1000, 50 * n)</pre></div><p>生成张数的规则。n=1、2、10 都是 1000 张，n=100 是 5000 张，n=1000 和 10000 是 50000 张。和 <code>manifest.json</code> 里那张表逐项对应。小 n 之所以要 1000 张而不是 50 张，是因为 FID 的协方差估计需要足够的样本，生成张数太少这个数字本身就不稳。</p></section><section class="sec" id="nearest"><div class="sec-head"><span class="sec-no">08</span><div><h2>nearest_token：双向 Hamming 最近邻</h2><p class="sec-line">util/exp_metrics.py 34–63</p></div></div><p>覆盖率和匹配误差是同一个操作的两个方向。这个函数被调用两次，参数顺序一换，含义就变了。</p><div class="code"><div class="hd"><span>Python · nearest_token：双向 Hamming 最近邻</span><span class="idx">11 / 22</span></div><pre><span class="k">for</span> qi <span class="k">in</span> range(0, nq, q_batch):
+    q = query[qi:qi + q_batch]
+    local_min = np.full(len(q), 256, dtype=np.int32)
+    <span class="k">for</span> gi <span class="k">in</span> range(0, gallery.shape[0], g_batch):
+        g = gallery[gi:gi + g_batch]
+        err = (q[:, <span class="k">None</span>, :] != g[<span class="k">None</span>, :, :]).sum(axis=-1)
+        idx = err.argmin(axis=1)
+        val = err[np.arange(len(q)), idx]
+        better = val &lt; local_min
+        local_min[better] = val[better]
+        local_nn[better] = idx[better] + gi</pre></div><ul class="doc"><li><span class="mk f"></span><span><code>(q[:, None, :] != g[None, :, :]).sum(-1)</code> 一次算出一整块距离矩阵：形状 <code>(q_batch, g_batch, 256)</code>，逐位不等再沿最后一维求和，就是 256 维的 Hamming 距离。</span></li><li><span class="mk"></span><span>两层分块，<code>q_batch=32</code>、<code>g_batch=4096</code>。50000 张生成图对 50000 张训练图是 25 亿对，不分块的话那个中间张量直接把显存或内存撑爆。</span></li><li><span class="mk f"></span><span><code>local_nn[better] = idx[better] + gi</code> 里的 <code>+ gi</code> 容易漏。<code>idx</code> 是块内下标，加回块偏移才是全局下标。</span></li><li><span class="mk"></span><span><code>min_err</code> 初始值 256，正好是最大可能的错位数，所以任何真实距离都会覆盖它；一张都对不上的图会留下 256 这个值。</span></li></ul><figure class="fig"><img src="../assets/ep02/fig-ink/fig6.png" alt="图 6 · eval_exp.py 的主流程" width="1680" height="1216"><figcaption>图 6 · eval_exp.py 的主流程</figcaption></figure><div class="code"><div class="hd"><span>Python · nearest_token：双向 Hamming 最近邻</span><span class="idx">12 / 22</span></div><pre>train_to_gen_err, _ = nearest_token(train_tokens, gen_tokens)
+gen_to_train_err, gen_nn = nearest_token(gen_tokens, train_tokens)</pre></div><p>两行方向相反。第一行问「每张训练图在生成结果里能不能被找到」——对应覆盖率。第二行问「每张生成图离最近的训练图有多远」，顺便把最近邻下标 <code>gen_nn</code> 留下来给拼图用。</p><div class="note"><span class="tag">注</span><div>第二行在 50000 张生成图上会跑很久，但它只做一次，结果被后面三处共用：匹配误差、覆盖率反查、拼图取图。</div></div></section><section class="sec" id="coverage"><div class="sec-head"><span class="sec-no">09</span><div><h2>覆盖率与匹配误差的定义</h2><p class="sec-line">util/exp_metrics.py 66–82、144–148</p></div></div><div class="code"><div class="hd"><span>Python · 覆盖率与匹配误差的定义</span><span class="idx">13 / 22</span></div><pre><span class="k">def</span> <span class="n">coverage_from_errors</span>(train_to_gen_errors, approx_max=APPROX_COVER_MAX_ERRORS):
+    err = np.asarray(train_to_gen_errors)
+    n = max(int(err.size), 1)
+    <span class="k">return</span> {
+        <span class="s">'exact'</span>: float((err == 0).sum()) / n,
+        <span class="s">'approx'</span>: float((err &lt;= approx_max).sum()) / n,
+        <span class="s">'approx_token_errors_max'</span>: int(approx_max),
+        <span class="s">'n_train'</span>: int(err.size),
+    }</pre></div><p>两个比例。<code>exact</code> 是完全覆盖：在生成集合里有某一张，256 个编号一个不差。小 n 上这个数可能非零，大 n 上接近 0。<code>approx</code> 放宽到最多错 16 个位置，README 说这是 6.25%。<code>n</code> 取 <code>max(size, 1)</code> 是为了空输入不除以零。</p><div class="code"><div class="hd"><span>Python · 覆盖率与匹配误差的定义</span><span class="idx">14 / 22</span></div><pre><span class="k">def</span> <span class="n">token_match_frac</span>(gen_to_train_errors):
+    err = np.asarray(gen_to_train_errors, dtype=np.float64)
+    <span class="k">if</span> err.size == 0:
+        <span class="k">return</span> 0.0
+    <span class="k">return</span> float((err / 256.0).mean())
+
+
+<span class="k">def</span> <span class="n">pixel_mse_uint8</span>(a, b):
+    <span class="k">return</span> float(np.mean((a - b) ** 2) / (255.0 ** 2))</pre></div><ul class="doc"><li><span class="mk f"></span><span><code>token_match_frac</code> 是编号口径的匹配误差：先除以 256 换成比例，再对所有生成图取平均。分母写死 256，因为编号图固定 16×16。</span></li><li><span class="mk"></span><span><code>pixel_mse_uint8</code> 除以 <code>255²</code>，把均方误差归一化到 [0, 1]。两处都写死归一化因子，是为了不同批次的数字能直接比较。</span></li><li><span class="mk f"></span><span>像素口径比的是<strong>两张 VQGAN 解码图</strong>，不是原始 JPEG。README 那句「不要拿未量化的 JPEG 来比」，在代码里的体现就是 <code>train_recons</code> 这个变量——训练图先编码再解码的结果，才拿去算误差。</span></li></ul></section><section class="sec" id="wrongtoken"><div class="sec-head"><span class="sec-no">10</span><div><h2>猜错的编号离正确答案有多远</h2><p class="sec-line">util/exp_metrics.py 96–141</p></div></div><p>第 4.1 和 4.2 节要验证的说法是：点积分类头加标签平滑时，模型学的不是「这个位置必须是编号 y」，而是「隐向量靠近 y 附近的一簇词向量」。验证方式是量一量猜错的那些编号，在词向量空间里离正确答案有多近。</p><div class="code"><div class="hd"><span>Python · 猜错的编号离正确答案有多远</span><span class="idx">15 / 22</span></div><pre>pred_e = emb[pred[wrong]]
+gt_e = emb[gt[wrong]]
+out[<span class="s">'wrong_cosine_distance'</span>] = float(_pairwise_cosine_distance(pred_e, gt_e).mean())
+out[<span class="s">'wrong_euclidean'</span>] = float(_pairwise_euclidean(pred_e, gt_e).mean())
+rng = np.random.RandomState(seed)
+rand = rng.randint(0, vocab_size, size=n_wrong)
+collide = rand == gt[wrong]
+rand[collide] = (rand[collide] + 1) % vocab_size</pre></div><ul class="doc"><li><span class="mk f"></span><span><code>emb</code> 传进来的是 <code>model.token_emb.word_embeddings.weight</code>，只取前 1024 行（codebook 那部分）。用的是<strong>词嵌入本身</strong>，而不是解码器输出的隐向量——因为「相近」的定义就建立在这张表上。</span></li><li><span class="mk"></span><span>两个距离各报一个：余弦距离看方向，欧氏距离看绝对位置。词向量没有归一化，两个数的含义确实不同。</span></li><li><span class="mk f"></span><span>随机基线不是「随便取一个编号」，而是<strong>逐条重新抽一个不等于正确答案的编号</strong>。<code>collide</code> 那两行处理抽中正确答案的情况，把它挪到下一个编号，保证基线里没有正确答案。</span></li><li><span class="mk"></span><span>有了这个基线，「猜错的编号比随机猜错更接近正确答案」才有意义。只报绝对距离，读者没法判断这个距离算近还是算远。</span></li></ul><div class="note"><span class="tag">注</span><div><code>n_wrong == 0</code> 时函数直接返回，所有距离留 <code>None</code>，并把 note 改成「no wrong tokens; distances undefined」。小 n 上模型把图全背下来时，这里会真的出现全对的情况。</div></div></section><section class="sec" id="grid"><div class="sec-head"><span class="sec-no">11</span><div><h2>拼图：三列各自是什么</h2><p class="sec-line">util/exp_metrics.py 166–197</p></div></div><p>README 第 2.2 节要求每个 n、每种设置留一张固定拼图，至少 8 张生成图，加各自的最近训练图，加那张训练图的 VQGAN 重建。</p><div class="code"><div class="hd"><span>Python · 拼图：三列各自是什么</span><span class="idx">16 / 22</span></div><pre><span class="k">for</span> i <span class="k">in</span> range(n_show):
+    j = int(nn_index[i]) <span class="k">if</span> i &lt; len(nn_index) <span class="k">else</span> 0
+    g = to_uint8_image(gen_images[i])
+    t = to_uint8_image(train_images[j])
+    r = to_uint8_image(train_recons[j])
+    panels.append((g, t, r))
+    labels.append((<span class="s">'gen {}'</span>.format(i), <span class="s">'train {}'</span>.format(j), <span class="s">'vqgan {}'</span>.format(j)))</pre></div><ul class="doc"><li><span class="mk f"></span><span>第 2 行 <code>j = nn_index[i]</code> 用的就是 <code>nearest_token</code> 返回的最近邻下标。所以第一列第 i 行和第二列第 j 行是编号空间里真正最近的一对，不是随便配的。</span></li><li><span class="mk"></span><span>第三列是第二列那张训练图的<strong>重建</strong>。它和第一列长得像不像，能直接看出生成图离量化上限还有多远。</span></li><li><span class="mk f"></span><span><code>labels</code> 写成 <code>gen 0 / train 7 / vqgan 7</code> 这种形式，下标能对上。看拼图的人不用去翻 json 就知道哪张对应哪张。</span></li></ul><figure class="fig"><img src="../assets/ep02/fig-ink/fig7.png" alt="图 7 · 双向最近邻：一个算覆盖率，一个算匹配误差" width="1680" height="363"><figcaption>图 7 · 双向最近邻：一个算覆盖率，一个算匹配误差</figcaption></figure><p>每行上方留 22px 画标签条，画布先铺白底再贴三张图。行数取 <code>min(GRID_N, 生成图数, 最近邻数)</code>——生成图少于 8 张时不会留出空行。</p><div class="warn"><span class="tag">敲黑板</span><p>README 那句「不要只留最好看的一张」在代码里对应的是：拼图取的是前 8 张生成图（<code>gen_preview</code> 里按生成顺序攒的前 8 张），<strong>不是按质量挑的</strong>。这是刻意的——如果按分数挑，拼图就失去诊断价值了。</p></div></section><section class="sec" id="fid"><div class="sec-head"><span class="sec-no">12</span><div><h2>fid_two_folders：同一个函数算两种 FID</h2><p class="sec-line">util/exp_fid.py 全文</p></div></div><p>第 4.5 节要求：每个报 FID 的设置，三个数字写在一起。代码层面这件事的落点是——生成 FID 和重建 FID 走的是同一个函数。</p><div class="code"><div class="hd"><span>Python · fid_two_folders：同一个函数算两种 FID</span><span class="idx">17 / 22</span></div><pre><span class="k">def</span> <span class="n">fid_two_folders</span>(dir_a, dir_b, device, batch_size=FID_BATCH_SIZE, num_workers=1,
+                    extractor=<span class="k">None</span>, dims=FID_DIMS):
+    <span class="s">""</span><span class="s">"Same function for generated-vs-ref and VQGAN-recon-vs-ref."</span><span class="s">""</span>
+    <span class="k">if</span> extractor <span class="k">is</span> <span class="k">None</span>:
+        extractor = build_inception(device, dims)
+    fa = features_from_folder(dir_a, device, batch_size, num_workers, extractor, dims)
+    fb = features_from_folder(dir_b, device, batch_size, num_workers, extractor, dims)
+    mu1, s1 = stats_from_features(fa)
+    mu2, s2 = stats_from_features(fb)
+    <span class="k">return</span> frechet_distance(mu1, s1, mu2, s2)</pre></div><ul class="doc"><li><span class="mk f"></span><span>两个文件夹各自抽特征，各算均值和协方差，再算 Fréchet 距离。调用方只要换参数顺序，就能算「生成 vs 参照」或「重建 vs 参照」。</span></li><li><span class="mk"></span><span><code>dims=2048</code> 对应 <code>InceptionV3.BLOCK_INDEX_BY_DIM</code> 里pool3 那一层，<code>batch_size=50</code> 和 <code>LGANs-TT realdata.py</code> 里的默认值一致。<code>implementation</code> 这个字符串会被原样写进 <code>metrics.json</code>，说明这个数字是谁算的。</span></li><li><span class="mk f"></span><span><code>batch_size > len(files)</code> 时会先降到文件数，避免小参照集上 DataLoader 报错。</span></li></ul><div class="code"><div class="hd"><span>Python · fid_two_folders：同一个函数算两种 FID</span><span class="idx">18 / 22</span></div><pre>covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=<span class="k">False</span>)
+<span class="k">if</span> <span class="k">not</span> np.isfinite(covmean).all():
+    offset = np.eye(sigma1.shape[0]) * eps
+    covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+<span class="k">if</span> np.iscomplexobj(covmean):
+    <span class="k">if</span> <span class="k">not</span> np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+        <span class="k">raise</span> ValueError(<span class="s">'Imaginary component {}'</span>.format(np.max(np.abs(covmean.imag))))
+    covmean = covmean.real</pre></div><p>矩阵平方根那一段是 FID 实现里最容易出问题的地方。协方差矩阵可能接近奇异，<code>sqrtm</code> 会返回非有限值或者复数。这里先加一个 <code>1e-6</code> 的对角扰动重算，再把虚部检查一遍——虚部真的超过了 <code>1e-3</code> 才报错，否则只取实部。这套兜底和 <code>pytorch-fid</code> 上游一致。</p><figure class="fig"><img src="../assets/ep02/fig-ink/fig8.png" alt="图 8 · 拼图的三列各自是什么" width="1680" height="339"><figcaption>图 8 · 拼图的三列各自是什么</figcaption></figure></section><section class="sec" id="metrics"><div class="sec-head"><span class="sec-no">13</span><div><h2>metrics.json 的模式与校验</h2><p class="sec-line">util/exp_metrics.py 18–31、280–297</p></div></div><p>所有评测的出口都是同一个 json。写之前先校验，缺字段直接抛异常。</p><div class="code"><div class="hd"><span>Python · metrics.json 的模式与校验</span><span class="idx">19 / 22</span></div><pre>REQUIRED_METRIC_KEYS = (
+    <span class="s">'n'</span>, <span class="s">'exp_name'</span>, <span class="s">'image_list'</span>, <span class="s">'A'</span>, <span class="s">'B'</span>, <span class="s">'source'</span>,
+    <span class="s">'generation'</span>, <span class="s">'fid'</span>, <span class="s">'coverage'</span>, <span class="s">'match_error'</span>, <span class="s">'oneshot_vs_self'</span>, <span class="s">'grid'</span>,
+)
+
+
+<span class="k">def</span> <span class="n">write_metrics_json</span>(metrics, path):
+    missing = [k <span class="k">for</span> k <span class="k">in</span> REQUIRED_METRIC_KEYS <span class="k">if</span> k <span class="k">not</span> <span class="k">in</span> metrics]
+    <span class="k">if</span> missing:
+        <span class="k">raise</span> ValueError(<span class="s">'metrics.json missing keys: {}'</span>.format(missing))
+    gen = metrics[<span class="s">'generation'</span>]
+    <span class="k">for</span> k <span class="k">in</span> (<span class="s">'temperature'</span>, <span class="s">'num_iter'</span>, <span class="s">'argmax'</span>, <span class="s">'num_images'</span>):
+        <span class="k">if</span> k <span class="k">not</span> <span class="k">in</span> gen:
+            <span class="k">raise</span> ValueError(<span class="s">'generation missing {}'</span>.format(k))
+    fid = metrics[<span class="s">'fid'</span>]
+    <span class="k">if</span> <span class="s">'generated_vs_ref'</span> <span class="k">not</span> <span class="k">in</span> fid <span class="k">or</span> <span class="s">'vqgan_recon_vs_ref'</span> <span class="k">not</span> <span class="k">in</span> fid:
+        <span class="k">raise</span> ValueError(<span class="s">'fid must include generated_vs_ref and vqgan_recon_vs_ref'</span>)</pre></div><ul class="doc"><li><span class="mk f"></span><span>三段校验对着三条 README 要求：指标不能缺（第 2.2 节那张表）、采样参数必须写下来（温度、步数、取最大概率还是采样、生成张数）、两个 FID 必须同时存在（第 4.5 节）。</span></li><li><span class="mk"></span><span>校验放在写入之前，所以不完整的评测结果落不了盘。跑完一个 n 拿不到 json，就说明哪一项没算。</span></li></ul><h4>实际写进去的结构</h4><div class="code"><div class="hd"><span>Python · metrics.json 的模式与校验</span><span class="idx">20 / 22</span></div><pre>metrics = {
+    <span class="s">'n'</span>: int(n),
+    <span class="s">'exp_name'</span>: exp_name,
+    <span class="s">'image_list'</span>: image_list,
+    <span class="s">'n_train'</span>: len(train_rel_paths),
+    <span class="s">'train_paths'</span>: list(train_rel_paths),
+    <span class="s">'A'</span>: IMAGE_A,
+    <span class="s">'B'</span>: IMAGE_B <span class="k">if</span> int(n) &gt;= 2 <span class="k">else</span> <span class="k">None</span>,
+    <span class="s">'source'</span>: source_info(),
+    <span class="s">'generation'</span>: {...},
+    <span class="s">'fid'</span>: {...},
+    <span class="s">'coverage'</span>: coverage,
+    <span class="s">'match_error'</span>: match_error,
+    <span class="s">'oneshot_vs_self'</span>: oneshot_vs_self,
+    <span class="s">'wrong_token_embed'</span>: wrong_token_embed,
+    <span class="s">'grid'</span>: grid_path,
+}</pre></div><ul class="doc"><li><span class="mk f"></span><span><code>'B': IMAGE_B if int(n) &gt;= 2 else None</code>——n=1 时没有第二张图，字段留 <code>None</code> 而不是编一个路径。</span></li><li><span class="mk"></span><span><code>'tokens_exact_equals_vqgan_recon': True</code> 写在 fid 段里，把第 4.5 节第 (2) 档那个论断固定成一条断言：编号全对时，像素结果就是重建图，FID 等于重建 FID。</span></li><li><span class="mk f"></span><span><code>generation</code> 段还有 <code>schedule</code>、<code>uncover_per_step</code>、<code>remask</code> 三个字段，把「用的哪个采样器」也钉住。<code>repeats_allowed: True</code> 说明生成张数里允许有重复。</span></li><li><span class="mk"></span><span>调用方还会塞两个额外字段：<code>setting</code>（这属于四种组合里的哪一种）和 <code>profile</code>（编码、生成、覆盖率、FID 各花了多少秒）。后者在做时间估算时有用。</span></li></ul><figure class="fig"><img src="../assets/ep02/fig-ink/fig9.png" alt="图 9 · 两个 FID 必须并排写" width="1680" height="300"><figcaption>图 9 · 两个 FID 必须并排写</figcaption></figure></section><section class="sec" id="memory"><div class="sec-head"><span class="sec-no">14</span><div><h2>内存纪律：五万张图怎么办</h2><p class="sec-line">eval_exp.py 216–234、381–421</p></div></div><p>n=1000 和 n=10000 要生成 50000 张图。把 50000 张 256×256 的浮点张量放在内存里是 50000×3×256×256×4 字节，接近 40 GB。代码里到处都在绕开这件事。</p><ul class="doc"><li><span class="mk f"></span><span><code>reconstruct_folder</code> 的 docstring 直接写着 <code>Do not load the whole folder.</code>，逐批编码解码，图直接写盘，不留在内存。</span></li><li><span class="mk"></span><span><code>encode_image_list</code> 也一样，只把编号数组攒下来（<code>int</code> 类型，50000×256 才 12 MB 出头），重建图写进 <code>train_vqgan_recon/</code> 目录。</span></li><li><span class="mk f"></span><span>算像素误差时，<code>pixel_mse_gen_dir</code> 是<strong>从 PNG 现读</strong>的：读一张算一张，算完就丢。所以它能在 50000 张上跑完而不爆内存。</span></li><li><span class="mk"></span><span>拼图只取前 8 张：生成过程中用 <code>gen_preview</code> 攒着，到 8 张就停止追加。剩下的图只在盘上，不进内存。</span></li></ul><div class="code"><div class="hd"><span>Python · 内存纪律：五万张图怎么办</span><span class="idx">21 / 22</span></div><pre><span class="k">def</span> <span class="n">pixel_mse_gen_dir</span>(gen_dir, n_gen, train_recons, gen_nn):
+    <span class="s">""</span><span class="s">"Match-error pixels from saved PNGs so 50k gens stay off the heap."</span><span class="s">""</span>
+    mses = []
+    <span class="k">for</span> i <span class="k">in</span> range(int(n_gen)):
+        arr = np.array(Image.open(gen_png_path(gen_dir, i)).convert(<span class="s">'RGB'</span>))
+        mses.append(pixel_mse_uint8(arr, train_recons[int(gen_nn[i])]))</pre></div><p><code>train_recons</code> 留在内存里是因为它最多只有训练集的规模。n=10000 时是 10000 张 256×256×3 的 uint8，约 2 GB，比生成那 50000 张小一个数量级。用一个可接受的常驻量换掉逐张读盘的开销。</p><h4>共享重建 FID 的缓存</h4><div class="code"><div class="hd"><span>Python · 内存纪律：五万张图怎么办</span><span class="idx">22 / 22</span></div><pre><span class="k">def</span> <span class="n">cached_shared_recon_fid</span>(recon_dir):
+    <span class="s">""</span><span class="s">"Reuse outputs/_ref/metrics.json when eval points at the shared recon dir."</span><span class="s">""</span>
+    shared = os.path.normpath(<span class="s">'outputs/_ref/tiny_val256_vqgan_recon'</span>)
+    <span class="k">if</span> os.path.normpath(recon_dir) != shared:
+        <span class="k">return</span> <span class="k">None</span>
+    value = (metrics.get(<span class="s">'fid'</span>) <span class="k">or</span> {}).get(<span class="s">'vqgan_recon_vs_ref'</span>)</pre></div><p>重建 FID 只取决于参照集和 VQGAN 权重，和 n、和训练出来的模型都无关。所以哪怕只计算一次，结果对每个 n 都成立。这里用路径比对来判断「你指向的是不是那个共享目录」，是的话就直接读现成的数字，不再跑一遍 Inception。路径用 <code>os.path.normpath</code> 归一化过，写成 <code>outputs/_ref/...</code> 还是 <code>./outputs/_ref/...</code> 都能命中。</p></section><section class="sec" id="keypoints"><div class="sec-head"><span class="sec-no">15</span><div><h2>这一篇的要点</h2></div></div><ol class="doc"><li><span class="knum">01</span><span>生成时有<strong>两套</strong>采样循环。cosine 按置信度批量遮回，uncover1 一步只定一个位置且不重遮。第 4.3 节的半 A 半 B 用后者，论文默认的 12 步生成不能替代。</span></li><li><span class="knum">02</span><span><code>mask_len</code> 的基数是写死的 256，不是当前未知数；上下界保证每步至少揭一个、至少留一个。</span></li><li><span class="knum">03</span><span><code>mask_by_random_topk</code> 的随机性来自 Gumbel 噪声，温度随进度衰减，最后几步接近按置信度落子。</span></li><li><span class="knum">04</span><span>覆盖率和匹配误差是同一套 Hamming 最近邻的两个方向：train→gen 算覆盖率，gen→train 算匹配误差并留下拼图要用的下标。</span></li><li><span class="knum">05</span><span>「相对自己」那一栏由 <code>oneshot_predict</code> 提供，全遮一次前向取最大概率，和最近邻是两件事，分开报。</span></li><li><span class="knum">06</span><span>两个 FID 必须并排：重建 vs 参照是量化上限，生成 vs 参照减掉它，剩下的才是模型和采样带来的误差。</span></li><li><span class="knum">07</span><span><code>metrics.json</code> 写之前先校验，采样参数和两个 FID 缺一个就落不了盘。</span></li><li><span class="knum">08</span><span>50000 张图靠「不整目录读进内存」撑住：重建逐批写盘、像素误差从 PNG 现读、拼图只留前 8 张。</span></li></ol></section><section class="apx"><details><summary>附录 · 9 张图的 mermaid 源码（原文）</summary><div class="item"><p class="lb">图 1 · cosine 采样器一次完整生成</p><pre>flowchart TD
+    START["token_indices&lt;br/&gt;(B, 256) 全部 = mask_token_label"]
+    LOOP{"step &amp;lt; num_iter?"}
+    CLS["前置类槽&lt;br/&gt;token_indices[:, 0] = fake_class_label&lt;br/&gt;序列变 (B, 257)"]
+    MASK["token_all_mask = (token_indices == mask_token_label)&lt;br/&gt;token_drop_mask = 全 0"]
+    ENC["token_emb → blocks → norm&lt;br/&gt;(不走 VQGAN，编码器看得到全部 257 个位置)"]
+    DEC["forward_decoder(x, drop_mask, all_mask)"]
+    LOG["logits[:, 1:, :1024]&lt;br/&gt;(B, 256, 1024)"]
+    PICK["采样：Categorical(logits).sample()&lt;br/&gt;或 argmax"]
+    KEEP["sampled_ids = where(unknown, 采样结果, cur_ids)&lt;br/&gt;已知位置不覆盖"]
+    RATIO["ratio = (step+1) / num_iter&lt;br/&gt;mask_ratio = cos(π/2 · ratio)"]
+    LEN["mask_len = floor(256 · mask_ratio)&lt;br/&gt;夹到 [1, sum(unknown)-1]"]
+    RE["mask_by_random_topk&lt;br/&gt;低置信度的位置遮回 mask_token"]
+    DECODE["循环结束后：get_codebook_entry → vqgan.decode"]
+    IMG["生成图 (B, 3, 256, 256)"]
+
+    START --&gt; LOOP
+    LOOP --&gt;|是| CLS --&gt; MASK --&gt; ENC --&gt; DEC --&gt; LOG --&gt; PICK --&gt; KEEP --&gt; RATIO --&gt; LEN --&gt; RE
+    RE --&gt; LOOP
+    LOOP --&gt;|否| DECODE --&gt; IMG</pre></div><div class="item"><p class="lb">图 2 · 两种采样器的差别只在揭开次序</p><pre>flowchart LR
+    subgraph COS["cosine（论文默认，eval_exp.py --schedule cosine）"]
+        C1["每步：所有未知位置一起预测"]
+        C2["按置信度遮回一批&lt;br/&gt;mask_ratio = cos(π/2 · ratio)"]
+        C3["已知位置不再重遮&lt;br/&gt;_CONFIDENCE_OF_KNOWN_TOKENS = +inf"]
+        C4["num_iter 步结束&lt;br/&gt;默认 20 步"]
+        C1 --&gt; C2 --&gt; C3 --&gt; C4
+    end
+
+    subgraph UN["uncover1（--schedule uncover1）"]
+        U1["每步：所有未知位置一起预测"]
+        U2["只挑置信度最高的 1 个位置落子&lt;br/&gt;conf.masked_fill(~unknown, -1e9) 后 argmax"]
+        U3["落子即固定，不重遮&lt;br/&gt;其余位置保持 mask_token"]
+        U4["最多 256 步&lt;br/&gt;unknown 全空就提前退出"]
+        U1 --&gt; U2 --&gt; U3 --&gt; U4
+    end
+
+    NOTE["两者每个位置仍然各自算概率。&lt;br/&gt;差别只在揭开的次序：一批 vs 一个。"]
+    COS --&gt; NOTE
+    UN --&gt; NOTE</pre></div><div class="item"><p class="lb">图 3 · mask_by_random_topk：先加噪再取阈值</p><pre>flowchart TD
+    P["probs (B_unknown, 1024)&lt;br/&gt;已对 logits 做 softmax"]
+    LOGP["confidence = log(probs)"]
+    GUM["＋ temperature · Gumbel(0,1)&lt;br/&gt;给每个候选加一份噪声"]
+    SORT["对 1024 个候选排序&lt;br/&gt;sorted_confidence"]
+    CUT["取第 mask_len 小的那个值当阈值&lt;br/&gt;cut_off = sorted[:, mask_len-1:mask_len]"]
+    MASK["masking = confidence &amp;lt;= cut_off&lt;br/&gt;低于阈值的候选被遮回"]
+    OUT["返回 masking 布尔矩阵"]
+
+    P --&gt; LOGP --&gt; GUM --&gt; SORT --&gt; CUT --&gt; MASK --&gt; OUT
+    TEMP["temperature · (1 - ratio)&lt;br/&gt;越到后面温度越低，噪声越小"] --&gt; GUM</pre></div><div class="item"><p class="lb">图 4 · mask_len = floor(256 · cos(π/2 · (step+1)/num_iter))</p><pre>xychart-beta
+    title "num_iter = 20 时，每一步留给下一步的遮挡位置数"
+    x-axis ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]
+    y-axis "mask_len（共 256 个位置）" 0 --&gt; 256
+    line [255, 252, 248, 243, 236, 228, 218, 207, 194, 181, 166, 150, 133, 116, 97, 79, 59, 40, 20, 0]</pre></div><div class="item"><p class="lb">图 5 · 半 A 半 B 的两种切法与两种揭法</p><pre>flowchart TD
+    A["图像 A（n=2 的第一张）"]
+    B["图像 B（n=2 的第二张）"]
+    TA["A 的编号 (16, 16)"]
+    TB["B 的编号 (16, 16)"]
+    STITCH{"拼接切法"}
+    LR["左右：左 8×16 取自 A&lt;br/&gt;右 8×16 取自 B"]
+    CB["棋盘／随机：A、B 各占 128 个位置"]
+    MASKED["拼好的编号作为可见输入&lt;br/&gt;其余位置 = mask_token"]
+    WAY{"揭开方式"}
+    ONE["一步揭开全部未知位置"]
+    STEP["一步只揭 1 个（uncover1）直到补完"]
+    OUT["补出的编号"]
+    CMP["和 A、B、理想拼图各差多少个编号&lt;br/&gt;接缝附近有没有被换成相近的编号"]
+
+    A --&gt; TA --&gt; STITCH
+    B --&gt; TB --&gt; STITCH
+    STITCH --&gt; LR --&gt; MASKED
+    STITCH --&gt; CB --&gt; MASKED
+    MASKED --&gt; WAY
+    WAY --&gt; ONE --&gt; OUT
+    WAY --&gt; STEP --&gt; OUT
+    OUT --&gt; CMP</pre></div><div class="item"><p class="lb">图 6 · eval_exp.py 的主流程</p><pre>flowchart TD
+    ARGS["命令行参数&lt;br/&gt;--n --exp_name --ckpt --gen_dir --recon_dir&lt;br/&gt;--temperature --num_iter --schedule --argmax"]
+    DETECT["infer_linear_head()&lt;br/&gt;读 args.json，或看权重里有没有 token_classifier"]
+    VQ["load_vqgan_only() 或 load_mage()"]
+    ENC["encode_image_list()&lt;br/&gt;逐批编码训练图，同时存 VQGAN 重建&lt;br/&gt;tokens 存 train_tokens.npy"]
+    GEN{"有 --gen_dir?"}
+    LOAD["读现成的生成图，编码成编号"]
+    SAMPLE["逐批生成，图存 PNG&lt;br/&gt;编号存 gen_tokens.npy"]
+    NN["nearest_token() 双向最近邻"]
+    COV["coverage_from_errors()&lt;br/&gt;完全覆盖 / 大致覆盖"]
+    MSE["pixel_mse_gen_dir()&lt;br/&gt;从 PNG 现算像素误差"]
+    GRID["write_grid()&lt;br/&gt;生成 / 最近训练图 / 该图重建"]
+    ONESHOT["oneshot_predict()&lt;br/&gt;一次全揭对训练图猜对多少"]
+    FID["fid_two_folders()&lt;br/&gt;生成 vs 参照、重建 vs 参照"]
+    JSON["write_metrics_json()"]
+
+    ARGS --&gt; DETECT --&gt; VQ --&gt; ENC --&gt; GEN
+    GEN --&gt;|是| LOAD --&gt; NN
+    GEN --&gt;|否| SAMPLE --&gt; NN
+    NN --&gt; COV --&gt; GRID
+    NN --&gt; MSE --&gt; GRID
+    VQ --&gt; ONESHOT --&gt; JSON
+    GRID --&gt; JSON
+    FID --&gt; JSON</pre></div><div class="item"><p class="lb">图 7 · 双向最近邻：一个算覆盖率，一个算匹配误差</p><pre>flowchart LR
+    B["已生成编号&lt;br/&gt;gen_tokens (Ng, 256)"]
+    T["训练编号&lt;br/&gt;train_tokens (Nt, 256)"]
+    D1["nearest_token(train, gen)"]
+    D2["nearest_token(gen, train)"]
+    E1["每张训练图最近的一次生成&lt;br/&gt;错几个编号"]
+    E2["每张生成图最近的一张训练图&lt;br/&gt;错几个编号 + 最近邻下标"]
+    C["coverage_from_errors()&lt;br/&gt;exact：错 0 个&lt;br/&gt;approx：错 ≤ 16 个"]
+    M["token_match_frac()&lt;br/&gt;平均错位比例"]
+    G["write_grid() 用最近邻下标&lt;br/&gt;挑出要展示的训练图"]
+
+    T --&gt; D1 --&gt; E1 --&gt; C
+    B --&gt; D2 --&gt; E2 --&gt; M
+    E2 --&gt; G</pre></div><div class="item"><p class="lb">图 8 · 拼图的三列各自是什么</p><pre>flowchart TD
+    GRID["拼图 grid.png&lt;br/&gt;每行 3 张：生成 | 最近的训练图 | 该训练图的 VQGAN 重建"]
+    R1["第 1 列：gen i&lt;br/&gt;模型采样出来的图"]
+    R2["第 2 列：train j&lt;br/&gt;编号空间里离它最近的那张训练图"]
+    R3["第 3 列：vqgan j&lt;br/&gt;那张训练图先编码再解码的结果"]
+    MEAN["看三列的关系就能分辨：&lt;br/&gt;整图复现 / 几张混在一起 / 只换了局部小块"]
+    N["默认 8 行（GRID_N）&lt;br/&gt;每行上方 22px 标签条"]
+
+    GRID --&gt; R1
+    GRID --&gt; R2
+    GRID --&gt; R3
+    R1 --&gt; MEAN
+    R2 --&gt; MEAN
+    R3 --&gt; MEAN
+    GRID --&gt; N</pre></div><div class="item"><p class="lb">图 9 · 两个 FID 必须并排写</p><pre>flowchart TD
+    subgraph FID3["第 4.5 节要求写在一起的三档数字"]
+        D1["(1) recon vs ref&lt;br/&gt;参照集每张编码再解码，和参照集算 FID&lt;br/&gt;VQGAN 量化本身的上限"]
+        D2["(2) 编号全对&lt;br/&gt;tokens_exact_equals_vqgan_recon = true，等于 (1)"]
+        D3["(3) generated vs ref&lt;br/&gt;模型采样出来的图 vs 参照集"]
+    end
+    GAP["(3) − (1) 才是分类头、标签平滑、&lt;br/&gt;遮挡方式和采样带来的误差"]
+    ONE["两者都走 fid_two_folders()&lt;br/&gt;同一个 Inception、同一个 Fréchet 距离"]
+
+    D1 --&gt; GAP
+    D3 --&gt; GAP
+    D1 --&gt; ONE
+    D3 --&gt; ONE</pre></div></details></section></div><footer class="footer"><div class="page"><p class="fp">MAGE 源码逐读 · 第 2 篇 / 共 5 篇</p><p class="ft">MAGE 源码逐读 · 第 2 篇 / 共 5 篇 | 生成与评测 · eval_exp.py</p><p class="fm">仓库：LTH14/mage · 实验分支：001eander/MAGE_new  |  生成日期：2026-09-29</p></div></footer></body>
+</html>

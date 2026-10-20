@@ -1,0 +1,612 @@
+{
+ "title": "MAGE 生成与评测",
+ "lead": "代码文件：eval_exp.py 与 util/exp_*.py（从 mask_token 到 metrics.json）",
+ "meta": "仓库：LTH14/mage · 实验分支：001eander/MAGE_new  |  生成日期：2026-09-29",
+ "series": {
+  "name": "MAGE 源码逐读",
+  "episode": 2,
+  "total": 5,
+  "subject": "生成与评测",
+  "roadmap": [
+   {
+    "n": 1,
+    "label": "主模型 models_mage.py",
+    "state": "已发出"
+   },
+   {
+    "n": 2,
+    "label": "生成与评测 eval_exp.py",
+    "state": "本篇"
+   },
+   {
+    "n": 3,
+    "label": "预训练引擎 engine_pretrain.py",
+    "state": "待写"
+   },
+   {
+    "n": 4,
+    "label": "微调与线性探测 engine_finetune.py",
+    "state": "待写"
+   },
+   {
+    "n": 5,
+    "label": "入口脚本 main_*.py",
+    "state": "待写"
+   }
+  ]
+ },
+ "toc": [
+  "这一篇讲什么",
+  "两个采样器",
+  "mask_by_random_topk",
+  "循环体逐步拆解",
+  "uncover1：一步只揭一个",
+  "oneshot：一次全揭只对答案",
+  "exp_data.py：冻结的子集与默认值",
+  "nearest_token：双向 Hamming 最近邻",
+  "覆盖率与匹配误差的定义",
+  "猜错的编号离正确答案有多远",
+  "拼图：三列各自是什么",
+  "fid_two_folders：同一个函数算两种 FID",
+  "metrics.json 的模式与校验",
+  "内存纪律：五万张图怎么办",
+  "这一篇的要点"
+ ],
+ "sections": [
+  {
+   "id": "overview",
+   "title": "这一篇讲什么",
+   "lineno": null,
+   "blocks": [
+    {
+     "type": "p",
+     "text": "第 1 篇讲的是模型怎么把编号猜回来。这一篇讲另一半：怎么让它从「一个编号都看不见」开始，一步步把 256 个编号补出来，以及怎么把「生成得好不好」变成一组可以核对的数字。"
+    },
+    {
+     "type": "p",
+     "text": "两条线。生成线在 <code>gen_img_uncond.py</code>（论文的独立生成脚本）和 <code>eval_exp.py</code> 的 <code>generate_batch</code> 里；评测线在 <code>util/exp_fid.py</code> 和 <code>util/exp_metrics.py</code> 里。评测线要做的事，是把 README 第 2.2 节列的那四样——FID、覆盖率、平均匹配误差、图像质量——逐一落成文件。"
+    },
+    {
+     "type": "flowline",
+     "text": "全遮的 256 个位置 → 每步预测并揭一部分 → 编号 → VQGAN 解码 → 图 ／ 同一批图 → FID、覆盖率、匹配误差、拼图"
+    },
+    {
+     "type": "p",
+     "text": "这一篇和 README 三处直接对应：第 2.2 节的指标定义、第 4.3 节的半 A 半 B、第 4.5 节的量化误差。代码里每一个数字都能指回那几节的要求，反过来也一样。"
+    },
+    {
+     "type": "h4",
+     "text": "先说明几个词"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<strong>一次全揭</strong>（<code>oneshot</code>）：256 个位置全是 <code>mask_token</code>，模型只前向一次，取最大概率。这不是采样，是探测模型「一眼看全部」能猜对多少。",
+      "<strong>最近邻</strong>：编号空间里逐位比较，数有多少个位置不一样。256 维上的 Hamming 距离。",
+      "<strong>相对自己</strong>：拿模型对某张训练图的预测，和这张训练图自己的编号比。对应 README 第 2.2 节那栏「一次揭开全部遮挡时猜对了多少」。",
+      "<strong>参照集</strong>：算 FID 时当基准的那批图。Tiny 子上就用 Tiny 的验证集，放大到 256、和训练时同一套预处理。"
+     ]
+    },
+    {
+     "type": "note",
+     "html": "这一篇只讲代码怎么组织，不放任何实验数字。本地没有 <code>outputs/</code> 和 <code>data/</code>，跑在集群上；文里的图都是从代码逻辑和公式直接推出来的，不是结果截图。"
+    }
+   ]
+  },
+  {
+   "id": "samplers",
+   "title": "两个采样器",
+   "lineno": "eval_exp.py 513–536",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "同一个仓库里有两套采样循环。<code>gen_img_uncond.py</code> 是论文的独立生成脚本，界面就三个旋钮：温度、步数、生成多少张。<code>eval_exp.py</code> 里那一套多了一个开关，把「怎么揭」也变成参数。"
+    },
+    {
+     "type": "code",
+     "text": "if schedule == 'uncover1':\n    gen_iters = 256\n    gen_note = (\n        'uncover1: each step commits the most-confident unknown position; '\n        'committed ids stay visible (no remask). Token sample/argmax matches '\n        '--sample/--argmax. Not the paper cosine remask sampler.'\n    )\nelse:\n    gen_iters = args.num_iter"
+    },
+    {
+     "type": "p",
+     "text": "这段注释把两种循环的区别写得很直白：<code>uncover1</code> 每一步只把最有把握的那一个位置定下来，定下来就不再改；论文那套是每一步按置信度遮回一批，已经猜对的位置也可能被重新盖住。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    START[\"token_indices<br/>(B, 256) 全部 = mask_token_label\"]\n    LOOP{\"step &lt; num_iter?\"}\n    CLS[\"前置类槽<br/>token_indices[:, 0] = fake_class_label<br/>序列变 (B, 257)\"]\n    MASK[\"token_all_mask = (token_indices == mask_token_label)<br/>token_drop_mask = 全 0\"]\n    ENC[\"token_emb → blocks → norm<br/>(不走 VQGAN，编码器看得到全部 257 个位置)\"]\n    DEC[\"forward_decoder(x, drop_mask, all_mask)\"]\n    LOG[\"logits[:, 1:, :1024]<br/>(B, 256, 1024)\"]\n    PICK[\"采样：Categorical(logits).sample()<br/>或 argmax\"]\n    KEEP[\"sampled_ids = where(unknown, 采样结果, cur_ids)<br/>已知位置不覆盖\"]\n    RATIO[\"ratio = (step+1) / num_iter<br/>mask_ratio = cos(π/2 · ratio)\"]\n    LEN[\"mask_len = floor(256 · mask_ratio)<br/>夹到 [1, sum(unknown)-1]\"]\n    RE[\"mask_by_random_topk<br/>低置信度的位置遮回 mask_token\"]\n    DECODE[\"循环结束后：get_codebook_entry → vqgan.decode\"]\n    IMG[\"生成图 (B, 3, 256, 256)\"]\n\n    START --> LOOP\n    LOOP -->|是| CLS --> MASK --> ENC --> DEC --> LOG --> PICK --> KEEP --> RATIO --> LEN --> RE\n    RE --> LOOP\n    LOOP -->|否| DECODE --> IMG",
+     "caption": "图 1 · cosine 采样器一次完整生成",
+     "index": 1
+    },
+    {
+     "type": "p",
+     "text": "值得留意的是编码器那一步。生成的时候没有任何位置被「丢掉」，<code>token_drop_mask</code> 是整个零张量，所以编码器看到的是类槽加上全部 256 个位置——没被遮的是真实编号，被遮的是 <code>mask_token</code>。这和第 1 篇里训练时的行为不一样：训练时编码器固定丢掉一半的位置，生成时一个都不丢。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart LR\n    subgraph COS[\"cosine（论文默认，eval_exp.py --schedule cosine）\"]\n        C1[\"每步：所有未知位置一起预测\"]\n        C2[\"按置信度遮回一批<br/>mask_ratio = cos(π/2 · ratio)\"]\n        C3[\"已知位置不再重遮<br/>_CONFIDENCE_OF_KNOWN_TOKENS = +inf\"]\n        C4[\"num_iter 步结束<br/>默认 20 步\"]\n        C1 --> C2 --> C3 --> C4\n    end\n\n    subgraph UN[\"uncover1（--schedule uncover1）\"]\n        U1[\"每步：所有未知位置一起预测\"]\n        U2[\"只挑置信度最高的 1 个位置落子<br/>conf.masked_fill(~unknown, -1e9) 后 argmax\"]\n        U3[\"落子即固定，不重遮<br/>其余位置保持 mask_token\"]\n        U4[\"最多 256 步<br/>unknown 全空就提前退出\"]\n        U1 --> U2 --> U3 --> U4\n    end\n\n    NOTE[\"两者每个位置仍然各自算概率。<br/>差别只在揭开的次序：一批 vs 一个。\"]\n    COS --> NOTE\n    UN --> NOTE",
+     "caption": "图 2 · 两种采样器的差别只在揭开次序",
+     "index": 2
+    },
+    {
+     "type": "warnbox",
+     "html": "README 第 4.3 节专门写了一句：论文默认的 12 步生成会把已经猜对的位置再遮回去，那不是半 A 半 B 实验。<code>--schedule uncover1</code> 就是为这件事准备的开关，它<strong>不做重遮</strong>，所以「一步只揭一个」这条路线才做得干净。拿默认的 12 步生成去代替半 A 半 B，测到的会是重遮带来的抖动。"
+    }
+   ]
+  },
+  {
+   "id": "topk",
+   "title": "mask_by_random_topk",
+   "lineno": "eval_exp.py 276–282",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "遮回哪些位置，由一个九行的函数决定。两个版本（<code>gen_img_uncond.py</code> 和 <code>eval_exp.py</code>）内容一致，只是设备写法不同。"
+    },
+    {
+     "type": "code",
+     "text": "def mask_by_random_topk(mask_len, probs, temperature=1.0):\n    mask_len = mask_len.squeeze()\n    confidence = torch.log(probs) + torch.Tensor(\n        temperature * np.random.gumbel(size=probs.shape)).to(probs.device)\n    sorted_confidence, _ = torch.sort(confidence, axis=-1)\n    cut_off = sorted_confidence[:, mask_len.long() - 1:mask_len.long()]\n    return confidence <= cut_off"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "第 2 行 <code>log(probs)</code> 把概率换成对数概率。概率越低的候选，对数越负，排到后面越容易被遮。",
+      "第 3–4 行加上 Gumbel 噪声。<strong>这一步是「随机」的来源</strong>：不加噪声，被遮的永远是最没把握的那些，采样会退化成贪心；加了噪声，排在第 mask_len 名附近的候选每次抽到的顺序都不一样。",
+      "第 5–6 行不排序后逐位取，而是先排序、取第 <code>mask_len</code> 小的值当阈值，再拿阈值去筛。这样输出是一个布尔矩阵，形状和输入一致，不会因为并列值多选出或少选出几个。",
+      "噪声幅度由调用方给：<code>temperature * (1 - ratio)</code>。越接近结束，温度越低，噪声越小，最后几步基本按置信度落子。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    P[\"probs (B_unknown, 1024)<br/>已对 logits 做 softmax\"]\n    LOGP[\"confidence = log(probs)\"]\n    GUM[\"＋ temperature · Gumbel(0,1)<br/>给每个候选加一份噪声\"]\n    SORT[\"对 1024 个候选排序<br/>sorted_confidence\"]\n    CUT[\"取第 mask_len 小的那个值当阈值<br/>cut_off = sorted[:, mask_len-1:mask_len]\"]\n    MASK[\"masking = confidence &lt;= cut_off<br/>低于阈值的候选被遮回\"]\n    OUT[\"返回 masking 布尔矩阵\"]\n\n    P --> LOGP --> GUM --> SORT --> CUT --> MASK --> OUT\n    TEMP[\"temperature · (1 - ratio)<br/>越到后面温度越低，噪声越小\"] --> GUM",
+     "caption": "图 3 · mask_by_random_topk：先加噪再取阈值",
+     "index": 3
+    },
+    {
+     "type": "tip",
+     "html": "这个函数在 <code>gen_img_uncond.py</code> 里用 <code>.cuda()</code> 写死了设备，在 <code>eval_exp.py</code> 里改成了 <code>.to(probs.device)</code>。后者才能在 CPU 上跑通——测试或冒烟脚本会用到。"
+    }
+   ]
+  },
+  {
+   "id": "loop",
+   "title": "循环体逐步拆解",
+   "lineno": "eval_exp.py 285–324",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "把 <code>generate_batch</code> 的循环体按执行顺序摊开，一共六件事。"
+    },
+    {
+     "type": "code",
+     "text": "for step in range(num_iter):\n    cur_ids = token_indices.clone().long()\n    logits = mage_codebook_logits(model, cur_ids)\n    if argmax:\n        sampled_ids = torch.argmax(logits, dim=-1)\n    else:\n        sampled_ids = torch.distributions.categorical.Categorical(\n            logits=logits).sample()\n    unknown_map = (cur_ids == mask_token_id)\n    sampled_ids = torch.where(unknown_map, sampled_ids, cur_ids)\n    ratio = 1.0 * (step + 1) / num_iter\n    mask_ratio = np.cos(math.pi / 2.0 * ratio)"
+    },
+    {
+     "type": "ol",
+     "items": [
+      "<code>cur_ids</code> 存一份本轮开始时的编号。后面用它算 <code>unknown_map</code>，也就是「这一步之前还看不见的位置」。",
+      "<code>mage_codebook_logits</code> 把当前编号补上类槽、算 <code>token_all_mask</code>，走一遍编码器和解码器，返回 <code>(B, 256, 1024)</code>。注意这里只截前 1024 类，类别编号和 mask 编号的 logits 全丢掉。",
+      "取编号的方式由 <code>--argmax</code> 决定：<code>argmax</code> 是每步取最大概率，<code>Categorical(...).sample()</code> 是按概率随机抽。README 第 2.2 节要求把「取最大概率还是随机采样」写进 <code>metrics.json</code>，对应的就是这一行。",
+      "<code>torch.where(unknown_map, sampled_ids, cur_ids)</code> 保证已经知道的位置不被新预测覆盖。这一句让「已知」变成单向的。",
+      "<code>ratio</code> 从 <code>1/num_iter</code> 走到 1，<code>mask_ratio</code> 是它的余弦。这是论文的调度：开头几乎全遮，结尾几乎全揭。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "xychart-beta\n    title \"num_iter = 20 时，每一步留给下一步的遮挡位置数\"\n    x-axis [\"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\", \"14\", \"15\", \"16\", \"17\", \"18\", \"19\", \"20\"]\n    y-axis \"mask_len（共 256 个位置）\" 0 --> 256\n    line [255, 252, 248, 243, 236, 228, 218, 207, 194, 181, 166, 150, 133, 116, 97, 79, 59, 40, 20, 0]",
+     "caption": "图 4 · mask_len = floor(256 · cos(π/2 · (step+1)/num_iter))",
+     "index": 4
+    },
+    {
+     "type": "h4",
+     "text": "mask_len 的两道夹取"
+    },
+    {
+     "type": "code",
+     "text": "mask_len = torch.tensor(\n    [np.floor(unknown_number_in_the_beginning * mask_ratio)],\n    device=device)\nmask_len = torch.maximum(\n    torch.tensor([1.0], device=device),\n    torch.minimum(torch.sum(unknown_map, dim=-1, keepdims=True) - 1, mask_len))"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "基数是 <code>unknown_number_in_the_beginning</code>，写死的 256，<strong>不是当前还剩多少未知</strong>。所以调度曲线不受中途状态影响，每一步留多少完全由步数决定。",
+      "上限是 <code>sum(unknown) - 1</code>：这一步至少得揭掉一个位置，否则循环可能原地打转。",
+      "下限是 1：至少留一个位置给下一步。所以最后一步之后，循环退出时的 <code>sampled_ids</code> 才是完整结果。"
+     ]
+    },
+    {
+     "type": "note",
+     "html": "<code>token_indices</code> 每轮都在被遮回和揭开的反复中变化，但最终拿去解码的是 <code>sampled_ids</code>——那个没被重新遮过的版本。两行代码差一个字，含义完全不同。"
+    }
+   ]
+  },
+  {
+   "id": "uncover1",
+   "title": "uncover1：一步只揭一个",
+   "lineno": "eval_exp.py 327–359",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "这个循环短，但把「不重遮」这件事做到了底。"
+    },
+    {
+     "type": "code",
+     "text": "for step in range(256):\n    unknown = token_indices == mask_token_id\n    if not bool(unknown.any()):\n        break\n    logits = mage_codebook_logits(model, token_indices)\n    pred = torch.distributions.categorical.Categorical(logits=logits).sample()\n    probs = torch.nn.functional.softmax(logits, dim=-1)\n    conf = torch.gather(probs, dim=-1, index=pred.unsqueeze(-1)).squeeze(-1)\n    conf = conf.masked_fill(~unknown, -1.0e9)\n    pick = conf.argmax(dim=-1)\n    token_indices = token_indices.clone()\n    token_indices[batch_idx, pick] = pred[batch_idx, pick]"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "第 2 行每轮重新算一次 <code>unknown</code>，第 3–4 行在未知清空时提前退出，所以 256 只是上界，实际步数等于需要填的位置数。",
+      "<code>conf</code> 取出被选中编号的概率，是「这一步有多有把握」的度量。",
+      "<code>masked_fill(~unknown, -1e9)</code> 把已经揭开的那些位置压到负无穷，<code>argmax</code> 就只能在未知位置里挑。<strong>这一句替代了排序，是两种采样器在实现上最直观的分野。</strong>",
+      "落子写回的是 <code>pred[batch_idx, pick]</code>，也就是那一步真正抽到的编号，而不是最大概率的编号——<code>--sample</code> 和 <code>--argmax</code> 的区别在这里同样生效。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    A[\"图像 A（n=2 的第一张）\"]\n    B[\"图像 B（n=2 的第二张）\"]\n    TA[\"A 的编号 (16, 16)\"]\n    TB[\"B 的编号 (16, 16)\"]\n    STITCH{\"拼接切法\"}\n    LR[\"左右：左 8×16 取自 A<br/>右 8×16 取自 B\"]\n    CB[\"棋盘／随机：A、B 各占 128 个位置\"]\n    MASKED[\"拼好的编号作为可见输入<br/>其余位置 = mask_token\"]\n    WAY{\"揭开方式\"}\n    ONE[\"一步揭开全部未知位置\"]\n    STEP[\"一步只揭 1 个（uncover1）直到补完\"]\n    OUT[\"补出的编号\"]\n    CMP[\"和 A、B、理想拼图各差多少个编号<br/>接缝附近有没有被换成相近的编号\"]\n\n    A --> TA --> STITCH\n    B --> TB --> STITCH\n    STITCH --> LR --> MASKED\n    STITCH --> CB --> MASKED\n    MASKED --> WAY\n    WAY --> ONE --> OUT\n    WAY --> STEP --> OUT\n    OUT --> CMP",
+     "caption": "图 5 · 半 A 半 B 的两种切法与两种揭法",
+     "index": 5
+    },
+    {
+     "type": "p",
+     "text": "第 4.3 节的两种揭法就是这两种循环。<code>uncover1</code> 让「补出来的编号更像 A 还是比较像 B」这个问题变得可以观察：一步一个位置地走，接缝附近如果发生替换，能看出是哪一步换的。默认的 cosine 循环一次揭一批，接缝的信息混在一整批里，看不出来。"
+    }
+   ]
+  },
+  {
+   "id": "oneshot",
+   "title": "oneshot：一次全揭只对答案",
+   "lineno": "eval_exp.py 237–255",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "README 第 2.2 节要求单独报一栏「一次揭开全部遮挡时，对训练图猜对了多少编号」。这个函数就是那一栏。"
+    },
+    {
+     "type": "code",
+     "text": "def oneshot_predict(model, images):\n    \"\"\"All positions masked, nothing dropped, argmax over codebook.\"\"\"\n    bsz = images.size(0)\n    mask_id = model.mask_token_label\n    token_indices = mask_id * torch.ones(bsz, 256, device=device)\n    token_indices = torch.cat(\n        [torch.zeros(bsz, 1, device=device), token_indices], dim=1)\n    token_indices[:, 0] = model.fake_class_label\n    token_all_mask = torch.ones_like(token_indices, dtype=torch.float32)\n    token_all_mask[:, 0] = 0\n    token_drop_mask = torch.zeros_like(token_indices, dtype=torch.float32)\n    logits = model.forward_decoder(x, token_drop_mask, token_all_mask)\n    return logits[:, 1:, :model.codebook_size].argmax(dim=-1)"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "输入不是编号，是<strong>图像张量</strong>。函数里不用它们做条件，只借 <code>images.size(0)</code> 拿批量大小——模型是无条件的，生成时确实不依赖任何输入图。",
+      "<code>token_all_mask</code> 全 1、类槽位设 0，<code>token_drop_mask</code> 全 0。编码器看到类槽加 256 个 mask 编号。",
+      "返回 <code>argmax</code> 而不是采样。这里要的是「模型最看好哪个」，不是「抽一个看看」。",
+      "调用方 <code>eval_exp.py</code> 拿它和 <code>encode_tokens(vqgan, batch)</code> 比，逐位算准确率。所以这一栏测的是<strong>相对自己</strong>，和最近邻那一栏不是一回事。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "大 n 时探针集会被裁剪"
+    },
+    {
+     "type": "code",
+     "text": "probe_file = args.probe_list or os.path.join(splits_dir, 'probe.txt')\nif os.path.isfile(probe_file) and args.n >= 1000:\n    probe_rel = [p for p in read_list(probe_file) if p in set(rel_paths)]\nelse:\n    probe_rel = list(rel_paths)"
+    },
+    {
+     "type": "p",
+     "text": "<code>splits/probe.txt</code> 是固定的 8 张：A、B，加 n=10 里接下来的 6 张。n 小的时候直接用全部训练图；n 到 1000 以上，训练集太大，就用这 8 张固定探针。<code>if p in set(rel_paths)</code> 这一步保证探针里的图确实在这个 n 的子集里——子集是嵌套的，所以不会漏。"
+    }
+   ]
+  },
+  {
+   "id": "data",
+   "title": "exp_data.py：冻结的子集与默认值",
+   "lineno": "util/exp_data.py 全文",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "这个模块只有 145 行，但实验里所有「固定住不让动」的东西都在这里。"
+    },
+    {
+     "type": "code",
+     "text": "N_VALUES = (1, 2, 10, 100, 1000, 10000)\nSPLIT_SEED = 0\nIMAGE_A = 'train/n01443537/images/n01443537_0.JPEG'\nIMAGE_B = 'train/n01629819/images/n01629819_0.JPEG'\nSOURCE_NATIVE_SIZE = 64\nTRAIN_EVAL_SIZE = 256\nFID_COMPARABLE_TO_PAPER = False\n\nDEFAULT_TEMPERATURE = 6.0\nDEFAULT_NUM_ITER = 20\nDEFAULT_ARGMAX = False\nDEFAULT_GEN_SEED = 0\nAPPROX_COVER_MAX_ERRORS = 16\nGRID_N = 8"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "A 和 B 是写死的两个路径，对应 <code>manifest.json</code> 里的金鱼和蝾螈。n=2 的两张就是它们，半 A 半 B 的 A、B 也是它们。README 第 2.1 节要求「n=2 的两张固定为半 A 半 B 的 A、B，不要另找两张」——用一个常量把这件事钉死。",
+      "<code>FID_COMPARABLE_TO_PAPER = False</code> 是 README 那句警告的代码版本：Tiny 原图 64×64，放大到 256 之后算出来的 FID 不能和论文的 ImageNet-256 数字比。它会被写进 <code>metrics.json</code> 的 <code>source</code> 字段，跟着结果一起走。",
+      "<code>DEFAULT_TEMPERATURE = 6.0</code>、<code>DEFAULT_NUM_ITER = 20</code>——注意这和 <code>gen_img_uncond.py</code> 里写死的 4.5 / 12 不一样。后者是论文脚本原本的默认值，这里用的是 <code>README.official.md</code> 里类无条件生成那条命令的参数。",
+      "<code>APPROX_COVER_MAX_ERRORS = 16</code> 就是 README 说的 6.25%（16/256），「大致覆盖」的阈值。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "两个数据集类，都不带标签"
+    },
+    {
+     "type": "code",
+     "text": "class ImageListDataset(Dataset):\n    \"\"\"RGB images from a frozen relative-path list. Label is unused (always 0).\"\"\"\n    def __getitem__(self, index):\n        img = Image.open(self.paths[index]).convert('RGB')\n        if self.transform is not None:\n            img = self.transform(img)\n        return img, 0\n\n\nclass TokenIndexDataset(Dataset):\n    \"\"\"Precomputed VQGAN codebook ids [N, 256]. Label unused (always 0).\"\"\""
+    },
+    {
+     "type": "p",
+     "text": "两个类都返回 <code>(数据, 0)</code>。<code>ImageListDataset</code> 在构造时就把缺失的图检查掉，缺一张就报错并给出第一条缺失路径，而不是等训练跑到一半才炸。生成和评测都是无条件任务，标签确实没用，写个 0 是为了兼容 <code>DataLoader</code> 的接口。"
+    },
+    {
+     "type": "code",
+     "text": "def default_num_images(n):\n    n = int(n)\n    if n >= 10000:\n        return 50000\n    return max(1000, 50 * n)"
+    },
+    {
+     "type": "p",
+     "text": "生成张数的规则。n=1、2、10 都是 1000 张，n=100 是 5000 张，n=1000 和 10000 是 50000 张。和 <code>manifest.json</code> 里那张表逐项对应。小 n 之所以要 1000 张而不是 50 张，是因为 FID 的协方差估计需要足够的样本，生成张数太少这个数字本身就不稳。"
+    }
+   ]
+  },
+  {
+   "id": "nearest",
+   "title": "nearest_token：双向 Hamming 最近邻",
+   "lineno": "util/exp_metrics.py 34–63",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "覆盖率和匹配误差是同一个操作的两个方向。这个函数被调用两次，参数顺序一换，含义就变了。"
+    },
+    {
+     "type": "code",
+     "text": "for qi in range(0, nq, q_batch):\n    q = query[qi:qi + q_batch]\n    local_min = np.full(len(q), 256, dtype=np.int32)\n    for gi in range(0, gallery.shape[0], g_batch):\n        g = gallery[gi:gi + g_batch]\n        err = (q[:, None, :] != g[None, :, :]).sum(axis=-1)\n        idx = err.argmin(axis=1)\n        val = err[np.arange(len(q)), idx]\n        better = val < local_min\n        local_min[better] = val[better]\n        local_nn[better] = idx[better] + gi"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>(q[:, None, :] != g[None, :, :]).sum(-1)</code> 一次算出一整块距离矩阵：形状 <code>(q_batch, g_batch, 256)</code>，逐位不等再沿最后一维求和，就是 256 维的 Hamming 距离。",
+      "两层分块，<code>q_batch=32</code>、<code>g_batch=4096</code>。50000 张生成图对 50000 张训练图是 25 亿对，不分块的话那个中间张量直接把显存或内存撑爆。",
+      "<code>local_nn[better] = idx[better] + gi</code> 里的 <code>+ gi</code> 容易漏。<code>idx</code> 是块内下标，加回块偏移才是全局下标。",
+      "<code>min_err</code> 初始值 256，正好是最大可能的错位数，所以任何真实距离都会覆盖它；一张都对不上的图会留下 256 这个值。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    ARGS[\"命令行参数<br/>--n --exp_name --ckpt --gen_dir --recon_dir<br/>--temperature --num_iter --schedule --argmax\"]\n    DETECT[\"infer_linear_head()<br/>读 args.json，或看权重里有没有 token_classifier\"]\n    VQ[\"load_vqgan_only() 或 load_mage()\"]\n    ENC[\"encode_image_list()<br/>逐批编码训练图，同时存 VQGAN 重建<br/>tokens 存 train_tokens.npy\"]\n    GEN{\"有 --gen_dir?\"}\n    LOAD[\"读现成的生成图，编码成编号\"]\n    SAMPLE[\"逐批生成，图存 PNG<br/>编号存 gen_tokens.npy\"]\n    NN[\"nearest_token() 双向最近邻\"]\n    COV[\"coverage_from_errors()<br/>完全覆盖 / 大致覆盖\"]\n    MSE[\"pixel_mse_gen_dir()<br/>从 PNG 现算像素误差\"]\n    GRID[\"write_grid()<br/>生成 / 最近训练图 / 该图重建\"]\n    ONESHOT[\"oneshot_predict()<br/>一次全揭对训练图猜对多少\"]\n    FID[\"fid_two_folders()<br/>生成 vs 参照、重建 vs 参照\"]\n    JSON[\"write_metrics_json()\"]\n\n    ARGS --> DETECT --> VQ --> ENC --> GEN\n    GEN -->|是| LOAD --> NN\n    GEN -->|否| SAMPLE --> NN\n    NN --> COV --> GRID\n    NN --> MSE --> GRID\n    VQ --> ONESHOT --> JSON\n    GRID --> JSON\n    FID --> JSON",
+     "caption": "图 6 · eval_exp.py 的主流程",
+     "index": 6
+    },
+    {
+     "type": "code",
+     "text": "train_to_gen_err, _ = nearest_token(train_tokens, gen_tokens)\ngen_to_train_err, gen_nn = nearest_token(gen_tokens, train_tokens)"
+    },
+    {
+     "type": "p",
+     "text": "两行方向相反。第一行问「每张训练图在生成结果里能不能被找到」——对应覆盖率。第二行问「每张生成图离最近的训练图有多远」，顺便把最近邻下标 <code>gen_nn</code> 留下来给拼图用。"
+    },
+    {
+     "type": "note",
+     "html": "第二行在 50000 张生成图上会跑很久，但它只做一次，结果被后面三处共用：匹配误差、覆盖率反查、拼图取图。"
+    }
+   ]
+  },
+  {
+   "id": "coverage",
+   "title": "覆盖率与匹配误差的定义",
+   "lineno": "util/exp_metrics.py 66–82、144–148",
+   "blocks": [
+    {
+     "type": "code",
+     "text": "def coverage_from_errors(train_to_gen_errors, approx_max=APPROX_COVER_MAX_ERRORS):\n    err = np.asarray(train_to_gen_errors)\n    n = max(int(err.size), 1)\n    return {\n        'exact': float((err == 0).sum()) / n,\n        'approx': float((err <= approx_max).sum()) / n,\n        'approx_token_errors_max': int(approx_max),\n        'n_train': int(err.size),\n    }"
+    },
+    {
+     "type": "p",
+     "text": "两个比例。<code>exact</code> 是完全覆盖：在生成集合里有某一张，256 个编号一个不差。小 n 上这个数可能非零，大 n 上接近 0。<code>approx</code> 放宽到最多错 16 个位置，README 说这是 6.25%。<code>n</code> 取 <code>max(size, 1)</code> 是为了空输入不除以零。"
+    },
+    {
+     "type": "code",
+     "text": "def token_match_frac(gen_to_train_errors):\n    err = np.asarray(gen_to_train_errors, dtype=np.float64)\n    if err.size == 0:\n        return 0.0\n    return float((err / 256.0).mean())\n\n\ndef pixel_mse_uint8(a, b):\n    return float(np.mean((a - b) ** 2) / (255.0 ** 2))"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>token_match_frac</code> 是编号口径的匹配误差：先除以 256 换成比例，再对所有生成图取平均。分母写死 256，因为编号图固定 16×16。",
+      "<code>pixel_mse_uint8</code> 除以 <code>255²</code>，把均方误差归一化到 [0, 1]。两处都写死归一化因子，是为了不同批次的数字能直接比较。",
+      "像素口径比的是<strong>两张 VQGAN 解码图</strong>，不是原始 JPEG。README 那句「不要拿未量化的 JPEG 来比」，在代码里的体现就是 <code>train_recons</code> 这个变量——训练图先编码再解码的结果，才拿去算误差。"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "wrongtoken",
+   "title": "猜错的编号离正确答案有多远",
+   "lineno": "util/exp_metrics.py 96–141",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "第 4.1 和 4.2 节要验证的说法是：点积分类头加标签平滑时，模型学的不是「这个位置必须是编号 y」，而是「隐向量靠近 y 附近的一簇词向量」。验证方式是量一量猜错的那些编号，在词向量空间里离正确答案有多近。"
+    },
+    {
+     "type": "code",
+     "text": "pred_e = emb[pred[wrong]]\ngt_e = emb[gt[wrong]]\nout['wrong_cosine_distance'] = float(_pairwise_cosine_distance(pred_e, gt_e).mean())\nout['wrong_euclidean'] = float(_pairwise_euclidean(pred_e, gt_e).mean())\nrng = np.random.RandomState(seed)\nrand = rng.randint(0, vocab_size, size=n_wrong)\ncollide = rand == gt[wrong]\nrand[collide] = (rand[collide] + 1) % vocab_size"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>emb</code> 传进来的是 <code>model.token_emb.word_embeddings.weight</code>，只取前 1024 行（codebook 那部分）。用的是<strong>词嵌入本身</strong>，而不是解码器输出的隐向量——因为「相近」的定义就建立在这张表上。",
+      "两个距离各报一个：余弦距离看方向，欧氏距离看绝对位置。词向量没有归一化，两个数的含义确实不同。",
+      "随机基线不是「随便取一个编号」，而是<strong>逐条重新抽一个不等于正确答案的编号</strong>。<code>collide</code> 那两行处理抽中正确答案的情况，把它挪到下一个编号，保证基线里没有正确答案。",
+      "有了这个基线，「猜错的编号比随机猜错更接近正确答案」才有意义。只报绝对距离，读者没法判断这个距离算近还是算远。"
+     ]
+    },
+    {
+     "type": "note",
+     "html": "<code>n_wrong == 0</code> 时函数直接返回，所有距离留 <code>None</code>，并把 note 改成「no wrong tokens; distances undefined」。小 n 上模型把图全背下来时，这里会真的出现全对的情况。"
+    }
+   ]
+  },
+  {
+   "id": "grid",
+   "title": "拼图：三列各自是什么",
+   "lineno": "util/exp_metrics.py 166–197",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "README 第 2.2 节要求每个 n、每种设置留一张固定拼图，至少 8 张生成图，加各自的最近训练图，加那张训练图的 VQGAN 重建。"
+    },
+    {
+     "type": "code",
+     "text": "for i in range(n_show):\n    j = int(nn_index[i]) if i < len(nn_index) else 0\n    g = to_uint8_image(gen_images[i])\n    t = to_uint8_image(train_images[j])\n    r = to_uint8_image(train_recons[j])\n    panels.append((g, t, r))\n    labels.append(('gen {}'.format(i), 'train {}'.format(j), 'vqgan {}'.format(j)))"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "第 2 行 <code>j = nn_index[i]</code> 用的就是 <code>nearest_token</code> 返回的最近邻下标。所以第一列第 i 行和第二列第 j 行是编号空间里真正最近的一对，不是随便配的。",
+      "第三列是第二列那张训练图的<strong>重建</strong>。它和第一列长得像不像，能直接看出生成图离量化上限还有多远。",
+      "<code>labels</code> 写成 <code>gen 0 / train 7 / vqgan 7</code> 这种形式，下标能对上。看拼图的人不用去翻 json 就知道哪张对应哪张。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart LR\n    B[\"已生成编号<br/>gen_tokens (Ng, 256)\"]\n    T[\"训练编号<br/>train_tokens (Nt, 256)\"]\n    D1[\"nearest_token(train, gen)\"]\n    D2[\"nearest_token(gen, train)\"]\n    E1[\"每张训练图最近的一次生成<br/>错几个编号\"]\n    E2[\"每张生成图最近的一张训练图<br/>错几个编号 + 最近邻下标\"]\n    C[\"coverage_from_errors()<br/>exact：错 0 个<br/>approx：错 ≤ 16 个\"]\n    M[\"token_match_frac()<br/>平均错位比例\"]\n    G[\"write_grid() 用最近邻下标<br/>挑出要展示的训练图\"]\n\n    T --> D1 --> E1 --> C\n    B --> D2 --> E2 --> M\n    E2 --> G",
+     "caption": "图 7 · 双向最近邻：一个算覆盖率，一个算匹配误差",
+     "index": 7
+    },
+    {
+     "type": "p",
+     "text": "每行上方留 22px 画标签条，画布先铺白底再贴三张图。行数取 <code>min(GRID_N, 生成图数, 最近邻数)</code>——生成图少于 8 张时不会留出空行。"
+    },
+    {
+     "type": "warnbox",
+     "html": "README 那句「不要只留最好看的一张」在代码里对应的是：拼图取的是前 8 张生成图（<code>gen_preview</code> 里按生成顺序攒的前 8 张），<strong>不是按质量挑的</strong>。这是刻意的——如果按分数挑，拼图就失去诊断价值了。"
+    }
+   ]
+  },
+  {
+   "id": "fid",
+   "title": "fid_two_folders：同一个函数算两种 FID",
+   "lineno": "util/exp_fid.py 全文",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "第 4.5 节要求：每个报 FID 的设置，三个数字写在一起。代码层面这件事的落点是——生成 FID 和重建 FID 走的是同一个函数。"
+    },
+    {
+     "type": "code",
+     "text": "def fid_two_folders(dir_a, dir_b, device, batch_size=FID_BATCH_SIZE, num_workers=1,\n                    extractor=None, dims=FID_DIMS):\n    \"\"\"Same function for generated-vs-ref and VQGAN-recon-vs-ref.\"\"\"\n    if extractor is None:\n        extractor = build_inception(device, dims)\n    fa = features_from_folder(dir_a, device, batch_size, num_workers, extractor, dims)\n    fb = features_from_folder(dir_b, device, batch_size, num_workers, extractor, dims)\n    mu1, s1 = stats_from_features(fa)\n    mu2, s2 = stats_from_features(fb)\n    return frechet_distance(mu1, s1, mu2, s2)"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "两个文件夹各自抽特征，各算均值和协方差，再算 Fréchet 距离。调用方只要换参数顺序，就能算「生成 vs 参照」或「重建 vs 参照」。",
+      "<code>dims=2048</code> 对应 <code>InceptionV3.BLOCK_INDEX_BY_DIM</code> 里pool3 那一层，<code>batch_size=50</code> 和 <code>LGANs-TT realdata.py</code> 里的默认值一致。<code>implementation</code> 这个字符串会被原样写进 <code>metrics.json</code>，说明这个数字是谁算的。",
+      "<code>batch_size > len(files)</code> 时会先降到文件数，避免小参照集上 DataLoader 报错。"
+     ]
+    },
+    {
+     "type": "code",
+     "text": "covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)\nif not np.isfinite(covmean).all():\n    offset = np.eye(sigma1.shape[0]) * eps\n    covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))\nif np.iscomplexobj(covmean):\n    if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):\n        raise ValueError('Imaginary component {}'.format(np.max(np.abs(covmean.imag))))\n    covmean = covmean.real"
+    },
+    {
+     "type": "p",
+     "text": "矩阵平方根那一段是 FID 实现里最容易出问题的地方。协方差矩阵可能接近奇异，<code>sqrtm</code> 会返回非有限值或者复数。这里先加一个 <code>1e-6</code> 的对角扰动重算，再把虚部检查一遍——虚部真的超过了 <code>1e-3</code> 才报错，否则只取实部。这套兜底和 <code>pytorch-fid</code> 上游一致。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    GRID[\"拼图 grid.png<br/>每行 3 张：生成 | 最近的训练图 | 该训练图的 VQGAN 重建\"]\n    R1[\"第 1 列：gen i<br/>模型采样出来的图\"]\n    R2[\"第 2 列：train j<br/>编号空间里离它最近的那张训练图\"]\n    R3[\"第 3 列：vqgan j<br/>那张训练图先编码再解码的结果\"]\n    MEAN[\"看三列的关系就能分辨：<br/>整图复现 / 几张混在一起 / 只换了局部小块\"]\n    N[\"默认 8 行（GRID_N）<br/>每行上方 22px 标签条\"]\n\n    GRID --> R1\n    GRID --> R2\n    GRID --> R3\n    R1 --> MEAN\n    R2 --> MEAN\n    R3 --> MEAN\n    GRID --> N",
+     "caption": "图 8 · 拼图的三列各自是什么",
+     "index": 8
+    }
+   ]
+  },
+  {
+   "id": "metrics",
+   "title": "metrics.json 的模式与校验",
+   "lineno": "util/exp_metrics.py 18–31、280–297",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "所有评测的出口都是同一个 json。写之前先校验，缺字段直接抛异常。"
+    },
+    {
+     "type": "code",
+     "text": "REQUIRED_METRIC_KEYS = (\n    'n', 'exp_name', 'image_list', 'A', 'B', 'source',\n    'generation', 'fid', 'coverage', 'match_error', 'oneshot_vs_self', 'grid',\n)\n\n\ndef write_metrics_json(metrics, path):\n    missing = [k for k in REQUIRED_METRIC_KEYS if k not in metrics]\n    if missing:\n        raise ValueError('metrics.json missing keys: {}'.format(missing))\n    gen = metrics['generation']\n    for k in ('temperature', 'num_iter', 'argmax', 'num_images'):\n        if k not in gen:\n            raise ValueError('generation missing {}'.format(k))\n    fid = metrics['fid']\n    if 'generated_vs_ref' not in fid or 'vqgan_recon_vs_ref' not in fid:\n        raise ValueError('fid must include generated_vs_ref and vqgan_recon_vs_ref')"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "三段校验对着三条 README 要求：指标不能缺（第 2.2 节那张表）、采样参数必须写下来（温度、步数、取最大概率还是采样、生成张数）、两个 FID 必须同时存在（第 4.5 节）。",
+      "校验放在写入之前，所以不完整的评测结果落不了盘。跑完一个 n 拿不到 json，就说明哪一项没算。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "实际写进去的结构"
+    },
+    {
+     "type": "code",
+     "text": "metrics = {\n    'n': int(n),\n    'exp_name': exp_name,\n    'image_list': image_list,\n    'n_train': len(train_rel_paths),\n    'train_paths': list(train_rel_paths),\n    'A': IMAGE_A,\n    'B': IMAGE_B if int(n) >= 2 else None,\n    'source': source_info(),\n    'generation': {...},\n    'fid': {...},\n    'coverage': coverage,\n    'match_error': match_error,\n    'oneshot_vs_self': oneshot_vs_self,\n    'wrong_token_embed': wrong_token_embed,\n    'grid': grid_path,\n}"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>'B': IMAGE_B if int(n) &gt;= 2 else None</code>——n=1 时没有第二张图，字段留 <code>None</code> 而不是编一个路径。",
+      "<code>'tokens_exact_equals_vqgan_recon': True</code> 写在 fid 段里，把第 4.5 节第 (2) 档那个论断固定成一条断言：编号全对时，像素结果就是重建图，FID 等于重建 FID。",
+      "<code>generation</code> 段还有 <code>schedule</code>、<code>uncover_per_step</code>、<code>remask</code> 三个字段，把「用的哪个采样器」也钉住。<code>repeats_allowed: True</code> 说明生成张数里允许有重复。",
+      "调用方还会塞两个额外字段：<code>setting</code>（这属于四种组合里的哪一种）和 <code>profile</code>（编码、生成、覆盖率、FID 各花了多少秒）。后者在做时间估算时有用。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    subgraph FID3[\"第 4.5 节要求写在一起的三档数字\"]\n        D1[\"(1) recon vs ref<br/>参照集每张编码再解码，和参照集算 FID<br/>VQGAN 量化本身的上限\"]\n        D2[\"(2) 编号全对<br/>tokens_exact_equals_vqgan_recon = true，等于 (1)\"]\n        D3[\"(3) generated vs ref<br/>模型采样出来的图 vs 参照集\"]\n    end\n    GAP[\"(3) − (1) 才是分类头、标签平滑、<br/>遮挡方式和采样带来的误差\"]\n    ONE[\"两者都走 fid_two_folders()<br/>同一个 Inception、同一个 Fréchet 距离\"]\n\n    D1 --> GAP\n    D3 --> GAP\n    D1 --> ONE\n    D3 --> ONE",
+     "caption": "图 9 · 两个 FID 必须并排写",
+     "index": 9
+    }
+   ]
+  },
+  {
+   "id": "memory",
+   "title": "内存纪律：五万张图怎么办",
+   "lineno": "eval_exp.py 216–234、381–421",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "n=1000 和 n=10000 要生成 50000 张图。把 50000 张 256×256 的浮点张量放在内存里是 50000×3×256×256×4 字节，接近 40 GB。代码里到处都在绕开这件事。"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>reconstruct_folder</code> 的 docstring 直接写着 <code>Do not load the whole folder.</code>，逐批编码解码，图直接写盘，不留在内存。",
+      "<code>encode_image_list</code> 也一样，只把编号数组攒下来（<code>int</code> 类型，50000×256 才 12 MB 出头），重建图写进 <code>train_vqgan_recon/</code> 目录。",
+      "算像素误差时，<code>pixel_mse_gen_dir</code> 是<strong>从 PNG 现读</strong>的：读一张算一张，算完就丢。所以它能在 50000 张上跑完而不爆内存。",
+      "拼图只取前 8 张：生成过程中用 <code>gen_preview</code> 攒着，到 8 张就停止追加。剩下的图只在盘上，不进内存。"
+     ]
+    },
+    {
+     "type": "code",
+     "text": "def pixel_mse_gen_dir(gen_dir, n_gen, train_recons, gen_nn):\n    \"\"\"Match-error pixels from saved PNGs so 50k gens stay off the heap.\"\"\"\n    mses = []\n    for i in range(int(n_gen)):\n        arr = np.array(Image.open(gen_png_path(gen_dir, i)).convert('RGB'))\n        mses.append(pixel_mse_uint8(arr, train_recons[int(gen_nn[i])]))"
+    },
+    {
+     "type": "p",
+     "text": "<code>train_recons</code> 留在内存里是因为它最多只有训练集的规模。n=10000 时是 10000 张 256×256×3 的 uint8，约 2 GB，比生成那 50000 张小一个数量级。用一个可接受的常驻量换掉逐张读盘的开销。"
+    },
+    {
+     "type": "h4",
+     "text": "共享重建 FID 的缓存"
+    },
+    {
+     "type": "code",
+     "text": "def cached_shared_recon_fid(recon_dir):\n    \"\"\"Reuse outputs/_ref/metrics.json when eval points at the shared recon dir.\"\"\"\n    shared = os.path.normpath('outputs/_ref/tiny_val256_vqgan_recon')\n    if os.path.normpath(recon_dir) != shared:\n        return None\n    value = (metrics.get('fid') or {}).get('vqgan_recon_vs_ref')"
+    },
+    {
+     "type": "p",
+     "text": "重建 FID 只取决于参照集和 VQGAN 权重，和 n、和训练出来的模型都无关。所以哪怕只计算一次，结果对每个 n 都成立。这里用路径比对来判断「你指向的是不是那个共享目录」，是的话就直接读现成的数字，不再跑一遍 Inception。路径用 <code>os.path.normpath</code> 归一化过，写成 <code>outputs/_ref/...</code> 还是 <code>./outputs/_ref/...</code> 都能命中。"
+    }
+   ]
+  },
+  {
+   "id": "keypoints",
+   "title": "这一篇的要点",
+   "lineno": null,
+   "blocks": [
+    {
+     "type": "ol",
+     "items": [
+      "生成时有<strong>两套</strong>采样循环。cosine 按置信度批量遮回，uncover1 一步只定一个位置且不重遮。第 4.3 节的半 A 半 B 用后者，论文默认的 12 步生成不能替代。",
+      "<code>mask_len</code> 的基数是写死的 256，不是当前未知数；上下界保证每步至少揭一个、至少留一个。",
+      "<code>mask_by_random_topk</code> 的随机性来自 Gumbel 噪声，温度随进度衰减，最后几步接近按置信度落子。",
+      "覆盖率和匹配误差是同一套 Hamming 最近邻的两个方向：train→gen 算覆盖率，gen→train 算匹配误差并留下拼图要用的下标。",
+      "「相对自己」那一栏由 <code>oneshot_predict</code> 提供，全遮一次前向取最大概率，和最近邻是两件事，分开报。",
+      "两个 FID 必须并排：重建 vs 参照是量化上限，生成 vs 参照减掉它，剩下的才是模型和采样带来的误差。",
+      "<code>metrics.json</code> 写之前先校验，采样参数和两个 FID 缺一个就落不了盘。",
+      "50000 张图靠「不整目录读进内存」撑住：重建逐批写盘、像素误差从 PNG 现读、拼图只留前 8 张。"
+     ]
+    }
+   ]
+  }
+ ],
+ "footer": "MAGE 源码逐读 · 第 2 篇 / 共 5 篇 | 生成与评测 · eval_exp.py"
+}

@@ -1,0 +1,944 @@
+{
+ "title": "MAGE 全解",
+ "lead": "代码文件：models_mage.py · eval_exp.py · util/exp_*.py（结构、数据流、推导、结果）",
+ "meta": "仓库：LTH14/mage · 实验分支：001eander/MAGE_new  |  生成日期：2026-09-29",
+ "series": {
+  "name": "MAGE 源码逐读",
+  "episode": 0,
+  "total": 5,
+  "ep_label": "全解篇 · 合讲 5 篇",
+  "subject": "结构 · 数据流 · 推导 · 结果",
+  "roadmap": [
+   {
+    "n": 1,
+    "label": "主模型 models_mage.py",
+    "state": "已发出"
+   },
+   {
+    "n": 2,
+    "label": "生成与评测 eval_exp.py",
+    "state": "已发出"
+   },
+   {
+    "n": 3,
+    "label": "预训练引擎 engine_pretrain.py",
+    "state": "待写"
+   },
+   {
+    "n": 4,
+    "label": "微调与线性探测 engine_finetune.py",
+    "state": "待写"
+   },
+   {
+    "n": 5,
+    "label": "入口脚本 main_*.py",
+    "state": "待写"
+   }
+  ]
+ },
+ "toc": [
+  "这一篇讲什么",
+  "编号空间：VQGAN 之后剩下什么",
+  "模型骨架",
+  "两个分类头",
+  "预训练一步：从图像到损失",
+  "训练目标到底是什么",
+  "为什么一次揭多个会拼出接不上的图",
+  "标签平滑把目标改成什么",
+  "点积头：一个带约束的最优解",
+  "线性头为什么能逃出去",
+  "cosine 调度：每步揭多少",
+  "FID 的分解与量化地板",
+  "覆盖率与匹配误差",
+  "推理：从全遮到一张图",
+  "评测流水线",
+  "下游两条路",
+  "论文的数字",
+  "本实验的口径",
+  "本实验的清单与状态",
+  "要点汇总"
+ ],
+ "sections": [
+  {
+   "id": "overview",
+   "title": "这一篇讲什么",
+   "lineno": null,
+   "blocks": [
+    {
+     "type": "p",
+     "text": "系列前两篇按文件走：第 1 篇讲 <code>models_mage.py</code> 怎么把编号猜回来，第 2 篇讲 <code>eval_exp.py</code> 怎么把生成结果变成可核对的数字。这一篇换个走法，按四条线把整个项目串一遍——<strong>模型结构、训练与推理的数据流、几处能推导清楚的理论、以及结果该怎么读</strong>。"
+    },
+    {
+     "type": "p",
+     "text": "这么走的原因是，前两篇分开看时有些东西看不出因果。比如标签平滑为什么会让点积头「换一个相近的小块」、为什么一次揭开多个位置会拼出左右对不上的图、为什么两个 FID 必须并排写——这三件事各自散在不同的文件里，但它们的答案都在同一套数学里。放在一起讲，推导才立得住。"
+    },
+    {
+     "type": "flowline",
+     "text": "图像 → 冻结 VQGAN → 256 个编号 → 遮住一部分 → 编码器 → 解码器 → 编号分数 → （训练）平滑交叉熵 ／（推理）逐步揭开 → 解码成图 → 指标"
+    },
+    {
+     "type": "h4",
+     "text": "四条线各自的落点"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<strong>结构</strong>：编号空间是 1024 个词的离散空间，模型全程不碰像素；词表 2025 = 1024 编号 + 1000 类别 + 1 mask；类槽用一个写死的编号 1100 表示。",
+      "<strong>数据流</strong>：训练时编码器固定丢掉一部分位置，解码器拿回全部 257 个槽；推理时一个位置都不丢，但要在 20 步里从全遮走到全揭。",
+      "<strong>理论</strong>：训练目标是逐位置的条件似然，采样器用的是它的平均场松弛；分类头的差别可以用一个带约束的最优化问题写清楚；FID 的量化下界来自解码的确定性。",
+      "<strong>结果</strong>：论文的数字是在 ImageNet-256 上、ViT-B 11.1；本实验跑的是 Tiny-ImageNet 放大到 256，那个数字不能拿来比。"
+     ]
+    },
+    {
+     "type": "note",
+     "html": "这一篇里出现的公式都是从头推的，代码行号指向实际文件。本实验自己的结果数字不在仓库里（<code>outputs/</code> 在集群上），所以「结果」那一部分只写口径和清单，不编数字。"
+    }
+   ]
+  },
+  {
+   "id": "tokens",
+   "title": "编号空间：VQGAN 之后剩下什么",
+   "lineno": "models_mage.py 158–171",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "整个项目建立在一个替换上：把图像换成 256 个编号，后面所有事情都在编号上做。做替换的是 VQGAN 的编码器，它把 256×256 的图压成 16×16 个特征，每个特征在 1024 个词里挑最近的一个。"
+    },
+    {
+     "type": "code",
+     "text": "config = OmegaConf.load('config/vqgan.yaml').model\nself.vqgan = VQModel(ddconfig=config.params.ddconfig,\n                     n_embed=config.params.n_embed,\n                     embed_dim=config.params.embed_dim,\n                     ckpt_path=vqgan_ckpt_path)\nfor param in self.vqgan.parameters():\n    param.requires_grad = False\n\nself.codebook_size = config.params.n_embed\nvocab_size = self.codebook_size + 1000 + 1\nself.fake_class_label = self.codebook_size + 1100 - 1024\nself.mask_token_label = vocab_size - 1"
+    },
+    {
+     "type": "p",
+     "text": "这五行把编号空间的边界定死了。逐条看："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>codebook_size = 1024</code>：一张图的编号取值是 <code>0..1023</code>。这个数字决定了分类头要输出多少类。",
+      "<code>vocab_size = 2025</code>：1024 个编号之外，多出 1000 个位置留给分类任务的类别编号，最后再加 1 个专给遮盖用。<strong>多出来的 1001 个不是为了生成服务的</strong>，它们的 logits 在算生成损失时会被切掉。",
+      "<code>fake_class_label = 1100</code>：写在序列最前面那个位置的编号。它落在类别编号区间里，和真实的 <code>0..1023</code> 不会碰撞，它对应的那一行嵌入是可学习的，作用等价于 BERT 的 <code>[CLS]</code>。",
+      "<code>mask_token_label = 2024</code>：遮盖位置用它替换。注意它是一个<strong>合法编号</strong>，模型得学会「看到 2024 说明这里需要预测」，而不是把它当成一个普通的词。"
+     ]
+    },
+    {
+     "type": "warnbox",
+     "html": "VQGAN 在构造函数里就被 <code>requires_grad = False</code> 冻结了，而且整个项目里它从不参与更新。这意味着<strong>像素层面的上限在训练开始前就定好了</strong>：模型再准，输出也只能是「同一张 256×256 图先编码再解码」的结果。这一句是后面 FID 那一节的地基。"
+    },
+    {
+     "type": "p",
+     "text": "位置信息由两张表提供：<code>BertEmbeddings.position_embeddings</code> 是可学习的 257 行表，和编号一起查表相加。文件里还有一套正弦余弦 <code>pos_embed</code> 和 <code>decoder_pos_embed</code>，它们是 MAE 骨架留下的，前向路径里不会走到。"
+    }
+   ]
+  },
+  {
+   "id": "skeleton",
+   "title": "模型骨架",
+   "lineno": "models_mage.py 184–233",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "骨架是标准的两段式：编码器看一小部分位置，解码器把全部位置的编号补出来。"
+    },
+    {
+     "type": "code",
+     "text": "self.blocks = nn.ModuleList([...  for i in range(depth)])\nself.norm = norm_layer(embed_dim)\n\nself.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)\nself.decoder_pos_embed_learned = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim))\nself.decoder_blocks = nn.ModuleList([... for i in range(decoder_depth)])\nself.decoder_norm = norm_layer(decoder_embed_dim)"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "ViT-B 是编码器 12 层 / 768 维、解码器 8 层 / 768 维；ViT-L 是 24 层 / 1024 维、解码器 8 层 / 1024 维。解码器比编码器浅，因为它的任务更局部。",
+      "解码器的位置嵌入用的是可学习的那一套（<code>decoder_pos_embed_learned</code>），固定正弦余弦那一套在初始化里被填了值但前向不用。",
+      "编码器和解码器之间只通过 <code>decoder_embed</code> 一个线性层连接，维度不同时在这里对齐。"
+     ]
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    IMG[\"图像 (B, 3, 256, 256)\"]\n    VQ[\"冻结 VQGAN.encode<br/>16×16 下采样 + 1024 词表量化\"]\n    TOK[\"256 个编号，(B, 256)<br/>取值 0..1023\"]\n    EMB[\"BertEmbeddings<br/>词嵌入 (2025, D) + 可学习位置嵌入 (257, D)\"]\n    PRE[\"前置类槽<br/>编号 = fake_class_label = 1100\"]\n    ENC[\"编码器 12 / 24 × Block<br/>见到的只有类槽 + 保留下来的位置\"]\n    DEC_IN[\"decoder_embed: D → D'<br/>加 decoder_pos_embed_learned\"]\n    DEC[\"解码器 8 × Block\"]\n    HEAD{\"分类头\"}\n    DOT[\"MlmLayer 点积头<br/>fc → gelu → ln，再与 detach 的词嵌入做内积\"]\n    LIN[\"token_classifier<br/>Linear(D', 1024)，自由权重\"]\n    LOG[\"每个位置 1024 个编号的分数\"]\n\n    IMG --> VQ --> TOK --> EMB --> PRE --> ENC --> DEC_IN --> DEC --> HEAD\n    HEAD --> DOT --> LOG\n    HEAD --> LIN --> LOG",
+     "caption": "图 1 · 模型骨架：图像只在 VQGAN 里出现一次",
+     "index": 1
+    },
+    {
+     "type": "note",
+     "html": "判断一个参数有没有用，最直接的办法是看前向路径。<code>patch_embed</code>、<code>cls_token</code>、<code>pos_embed</code>、<code>decoder_pos_embed</code>、<code>mask_token</code>、<code>decoder_pred</code> 这六样在 <code>forward_encoder</code> 和 <code>forward_decoder</code> 里都找不到，它们是从 MAE 继承下来的形状。读代码时被它们带偏会浪费很多时间。"
+    }
+   ]
+  },
+  {
+   "id": "heads",
+   "title": "两个分类头",
+   "lineno": "models_mage.py 218–233",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "补出编号的那一层有两种写法，用一个开关切换。这个开关是后面所有「背图还是换块」讨论的入口。"
+    },
+    {
+     "type": "code",
+     "text": "if self.linear_head:\n    self.mlm_layer = None\n    self.token_classifier = nn.Linear(decoder_embed_dim, self.codebook_size)\nelse:\n    self.mlm_layer = MlmLayer(feat_emb_dim=decoder_embed_dim,\n                              word_emb_dim=embed_dim, vocab_size=vocab_size)\n    self.token_classifier = None"
+    },
+    {
+     "type": "h4",
+     "text": "点积头 MlmLayer"
+    },
+    {
+     "type": "code",
+     "text": "def forward(self, x, word_embeddings):\n    mlm_hidden = self.ln(self.gelu(self.fc(x)))\n    word_embeddings = word_embeddings.transpose(0, 1)\n    logits = torch.matmul(mlm_hidden, word_embeddings)\n    return logits + self.bias"
+    },
+    {
+     "type": "p",
+     "text": "关键是最后一行的权重来自哪里。调用方传进来的是 <code>self.token_emb.word_embeddings.weight.data.detach()</code>——<strong>分类权重就是词嵌入表本身，而且梯度不从这里回流</strong>。于是隐向量只能通过内积和词向量比较，它没有自己独立的一套类别方向。"
+    },
+    {
+     "type": "p",
+     "text": "这一句是整个项目里最有后果的一行。下一篇要推的「最优解被限制在词向量张成的空间里」，说的就是它。"
+    },
+    {
+     "type": "h4",
+     "text": "独立分类头"
+    },
+    {
+     "type": "code",
+     "text": "self.token_classifier = nn.Linear(decoder_embed_dim, self.codebook_size)"
+    },
+    {
+     "type": "p",
+     "text": "一行。<code>token_classifier</code> 的 1024 行权重完全自由，不受词嵌入表的任何约束。它多出来的参数量是 1024 × decoder_embed_dim，ViT-B 上是 78 万，占总参数量的很小一部分，但它换来的是完全不同的解空间。"
+    },
+    {
+     "type": "tip",
+     "html": "评测脚本要判断一个 checkpoint 属于哪种头，用的是 <code>infer_linear_head()</code>：先读同目录的 <code>args.json</code>，读不到就去权重字典里找有没有 <code>token_classifier</code> 开头的键。"
+    }
+   ]
+  },
+  {
+   "id": "pretrain",
+   "title": "预训练一步：从图像到损失",
+   "lineno": "models_mage.py 266–375",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "这一步要同时回答两个问题：编码器看到什么，损失算在哪里。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    X{\"输入 dtype\"}\n    F[\"浮点：走 vqgan.encode<br/>no_grad，不产生梯度\"]\n    I[\"整数：已经是缓存编号<br/>--cache_tokens 时走这条\"]\n    TOK[\"token_indices (B, 256)<br/>gt_indices = 原样复制当监督\"]\n    R[\"抽一个遮挡比例<br/>r ~ truncnorm(mu=0.55, sigma=0.25)<br/>截断到 [mask_ratio_min, mask_ratio_max]\"]\n    N1[\"num_drop = ceil(256 · mask_ratio_min)<br/>至少丢这么多\"]\n    N2[\"num_mask = ceil(256 · r)<br/>至少遮这么多\"]\n    S[\"noise = rand(B, 256)，排序后取第 k 小值当阈值<br/>恰好选中 k 个位置\"]\n    DM[\"token_drop_mask ⊂ token_all_mask\"]\n    REPL[\"token_all_mask 位置的编号改写成 mask_token_label\"]\n    CAT[\"前置类槽，长度 257\"]\n    BERT[\"token_emb\"]\n    KEEP[\"按 keep = 1 - drop 挑出保留位置<br/>(B, 129, D)\"]\n    E[\"12 / 24 × Block + LayerNorm\"]\n    D[\"forward_decoder：回填位置 → 8 × Block\"]\n    LOSS[\"forward_loss<br/>只对 token_all_mask 位置求平滑交叉熵\"]\n\n    X -->|浮点| F --> TOK\n    X -->|整数| I --> TOK\n    TOK --> R --> N1 --> S\n    R --> N2 --> S\n    S --> DM --> REPL --> CAT --> BERT --> KEEP --> E --> D --> LOSS",
+     "caption": "图 2 · 预训练一步：从图像到损失",
+     "index": 2
+    },
+    {
+     "type": "h4",
+     "text": "输入有两种可能"
+    },
+    {
+     "type": "code",
+     "text": "if x.dtype in (torch.int32, torch.int64):\n    token_indices = x.long()\n    gt_indices = token_indices.clone()\nelse:\n    with torch.no_grad():\n        z_q, _, token_tuple = self.vqgan.encode(x)\n    _, _, token_indices = token_tuple\n    token_indices = token_indices.reshape(z_q.size(0), -1)\n    gt_indices = token_indices.clone().detach().long()"
+    },
+    {
+     "type": "p",
+     "text": "浮点进来就是真图像，走 VQGAN；整数进来就是缓存好的编号，直接拿来用。后一条路是为 <code>--cache_tokens</code> 准备的——VQGAN 每步都要重新编码一遍同样那几张图，纯属浪费，预先算好存盘可以省掉。<code>gt_indices</code> 在两条路上都是原编号的副本，它是监督信号。"
+    },
+    {
+     "type": "h4",
+     "text": "两个掩码，一个套在另一个里"
+    },
+    {
+     "type": "code",
+     "text": "mask_rate = self.mask_ratio_generator.rvs(1)[0]\nnum_dropped_tokens = int(np.ceil(seq_len * mask_ratio_min))\nnum_masked_tokens = int(np.ceil(seq_len * mask_rate))\n\nwhile True:\n    noise = torch.rand(bsz, seq_len, device=device)\n    sorted_noise, _ = torch.sort(noise, dim=1)\n    cutoff_drop = sorted_noise[:, num_dropped_tokens-1:num_dropped_tokens]\n    cutoff_mask = sorted_noise[:, num_masked_tokens-1:num_masked_tokens]\n    token_drop_mask = (noise <= cutoff_drop).float()\n    token_all_mask = (noise <= cutoff_mask).float()\n    if token_drop_mask.sum() == bsz*num_dropped_tokens and token_all_mask.sum() == bsz*num_masked_tokens:\n        break"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>mask_rate</code> 每步只抽<strong>一个</strong>标量，这一批数据共用。分布是截断正态，默认均值 0.55、标准差 0.25，截断到 <code>[mask_ratio_min, mask_ratio_max]</code>。",
+      "<code>num_dropped_tokens</code> 由 <code>mask_ratio_min</code> 决定，和抽到的比例无关。这是编码器<strong>固定</strong>要丢掉的数量，默认 0.5 时是 128 个。",
+      "<code>num_masked_tokens</code> 由抽到的比例决定，总是大于等于前者。两个集合是包含关系：<code>token_drop_mask ⊂ token_all_mask</code>。",
+      "用「排序后取第 k 小值当阈值」而不是直接取前 k 个，是为了让输出保持布尔矩阵的形状；噪声里出现并列值时选中个数会对不上，<code>while True</code> 就是处理这种情况的。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "编码器看 129 个位置，解码器填 257 个槽"
+    },
+    {
+     "type": "code",
+     "text": "token_indices[token_all_mask.nonzero(as_tuple=True)] = self.mask_token_label\ntoken_indices = torch.cat([torch.zeros(..., 1, device=device), token_indices], dim=1)\ntoken_indices[:, 0] = self.fake_class_label\n\ntoken_keep_mask = 1 - token_drop_mask\ninput_embeddings_after_drop = input_embeddings[token_keep_mask.nonzero(as_tuple=True)] \\\n    .reshape(bsz, -1, emb_dim)"
+    },
+    {
+     "type": "p",
+     "text": "按 <code>token_keep_mask</code> 把被丢掉的位置摘掉，序列从 257 缩到 257−128=129。这 129 个里面，一部分是真实编号，一部分是已经被改写成 <code>mask_token_label</code> 的位置——它们没有被丢掉，只是身份被藏起来了。<strong>两个掩码的差别就体现在这里</strong>：丢掉的连槽位都不占，被遮的还占着槽位。"
+    },
+    {
+     "type": "h4",
+     "text": "解码器把位置放回去"
+    },
+    {
+     "type": "code",
+     "text": "mask_tokens = x[:, 0:1].repeat(1, token_all_mask.shape[1], 1)\nx_after_pad = mask_tokens.clone()\nx_after_pad[(1 - token_drop_mask).nonzero(as_tuple=True)] = x.reshape(x.shape[0] * x.shape[1], x.shape[2])\nx_after_pad = torch.where(token_all_mask.unsqueeze(-1).bool(), mask_tokens, x_after_pad)"
+    },
+    {
+     "type": "p",
+     "text": "三步：先把 257 个槽全填成类槽的表示；再把编码器留下的 129 个输出放回原位置；最后把 <code>token_all_mask</code> 为 1 的位置重新盖回填充向量。第三步处理的是「没被编码器丢掉、但属于遮盖集合」的那批位置。走完之后解码器看到的是一张对齐的 257 槽序列，可见位置是真编号，遮盖位置是填充向量。"
+    },
+    {
+     "type": "h4",
+     "text": "损失只算在被遮盖的位置"
+    },
+    {
+     "type": "code",
+     "text": "bsz, seq_len = gt_indices.size()\nloss = self.criterion(logits[:, 1:, :self.codebook_size].reshape(bsz*seq_len, -1),\n                      gt_indices.reshape(bsz*seq_len))\nloss = loss.reshape(bsz, seq_len)\nloss = (loss * mask[:, 1:]).sum() / mask[:, 1:].sum()"
+    },
+    {
+     "type": "p",
+     "text": "三个切片要注意：丢掉类槽那一列、只取前 1024 类（把类别编号和 mask 编号的 logits 扔掉）、然后 reshape 到和标签对齐。最后一行按 <code>token_all_mask</code> 加权平均，没被遮的位置不贡献损失。"
+    }
+   ]
+  },
+  {
+   "id": "obj",
+   "title": "训练目标到底是什么",
+   "lineno": "理论推导 · 一",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "把上面这几步抽象出来，训练在最小化的是这样一个量。记编号图为 <code>x ∈ {0..1023}^256</code>，<code>M</code> 是被遮盖的位置集合，<code>C</code> 是编码器看得到的位置集合，<code>q_i(v | x_C)</code> 是模型在位置 <code>i</code> 上给出的分布。训练损失就是"
+    },
+    {
+     "type": "flowline",
+     "text": "L = E_M [ (1/|M|) Σ_{i∈M} −log q_i(x_i | x_C) ] ＋ 标签平滑项"
+    },
+    {
+     "type": "p",
+     "text": "这里的期望是对遮挡过程取的：先抽 <code>r</code>，再抽哪些位置进 <code>M</code>。标签平滑加进来之后，每一项从 <code>−log q_i(x_i)</code> 变成 <code>−(1−ε)·log q_i(x_i) − ε·(1/V)Σ_v log q_i(v)</code>，也就是把「正确答案占 100% 置信」改成「占 90%」。"
+    },
+    {
+     "type": "h4",
+     "text": "它不是联合似然的极大化"
+    },
+    {
+     "type": "p",
+     "text": "这一点值得说清楚，因为它直接解释了后面的采样行为。对固定的 <code>M</code> 和 <code>C</code>，把模型在每个位置上的对数概率加起来，和整块的对数概率比一下："
+    },
+    {
+     "type": "flowline",
+     "text": "Σ_{i∈M} log p(x_i | x_C)  ≥  log p(x_M | x_C)"
+    },
+    {
+     "type": "p",
+     "text": "左边是各位置边缘分布的对数和，右边是这一块的联合分布。不等号的方向来自熵的次可加性：<code>H(X_M | X_C) ≤ Σ_i H(X_i | X_C)</code>。换句话说，<strong>逐位置预测的这个目标，是在优化联合似然的一个上界</strong>——它比真正要做的事情宽松。"
+    },
+    {
+     "type": "p",
+     "text": "宽松在哪里？宽松在它<strong>不要求模型刻画 <code>M</code> 内部位置之间的依赖</strong>。位置 <code>i</code> 和位置 <code>j</code> 如果都在被遮的集合里，模型对它们的预测各自只看 <code>C</code>，互相之间不需要一致。这正是论文为什么要让解码器在每个位置上「分别」算概率。"
+    },
+    {
+     "type": "note",
+     "html": "训练时的编码器看到的是缩过的 129 个位置，解码器看到的是对齐的 257 个槽。两者的差别不影响上面的结论：对解码器来说，被遮位置之间依然没有互相依赖的输出结构。"
+    }
+   ]
+  },
+  {
+   "id": "meanfield",
+   "title": "为什么一次揭多个会拼出接不上的图",
+   "lineno": "理论推导 · 二",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "接着上面那个上界往下走。既然训练时就把「位置之间互相依赖」这一层省掉了，采样时自然拿不到它。采样器在每一步做的是"
+    },
+    {
+     "type": "flowline",
+     "text": "从 Π_{i∈M} q_i(x_i | x_C) 里抽一样本"
+    },
+    {
+     "type": "p",
+     "text": "这是一个<strong>平均场近似</strong>：用各位置的边缘分布的乘积去代替真正的联合分布。当被遮的位置互相独立时它是对的；当它们强相关时它会失真。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    START[\"token_indices 全部 = mask_token_label<br/>256 个位置都看不见\"]\n    S1[\"每步：拼类槽 → token_emb → 编码器 → 解码器<br/>drop_mask 全 0，编码器一个位置都不丢\"]\n    S2[\"logits[:, 1:, :1024]\"]\n    BR{\"--argmax ?\"}\n    A1[\"argmax，取最大概率\"]\n    A2[\"Categorical(...).sample()，按概率抽\"]\n    KEEP[\"已知位置用 cur_ids 覆盖回去<br/>where(unknown_map, 新预测, 旧编号)\"]\n    SCH{\"--schedule\"}\n    C1[\"cosine：mask_ratio = cos(π/2 · ratio)<br/>按置信度批量遮回\"]\n    C2[\"uncover1：只定最把握的 1 个位置<br/>落子即固定，绝不重遮\"]\n    END1[\"循环结束，用 sampled_ids\"]\n    END2[\"未知清空或走满 256 步\"]\n    DEC[\"get_codebook_entry → vqgan.decode\"]\n    IMG[\"生成图 (B, 3, 256, 256)\"]\n\n    START --> S1 --> S2 --> BR\n    BR -->|是| A1 --> KEEP\n    BR -->|否| A2 --> KEEP\n    KEEP --> SCH\n    SCH -->|cosine| C1 --> END1\n    SCH -->|uncover1| C2 --> END2\n    END1 --> DEC\n    END2 --> DEC\n    DEC --> IMG",
+     "caption": "图 3 · 推理：两套采样循环，只是揭开次序不同",
+     "index": 3
+    },
+    {
+     "type": "h4",
+     "text": "这和半 A 半 B 实验的对应"
+    },
+    {
+     "type": "p",
+     "text": "把 A 的左半和 B 的右半拼成一张编号图，接缝以左全部由 A 决定，接缝以右全部由 B 决定。这是一个<strong>强相关</strong>的联合分布：知道左边是 A，右边的合理取值就被限制住了。而采样器一次从乘积分布里抽一批位置，抽的时候彼此不知道对方抽了什么，于是接缝两侧可以各自成立、合起来不成立。"
+    },
+    {
+     "type": "p",
+     "text": "一次只揭一个位置为什么好一些：抽完立刻把它变成可见，下一步的条件里就包含了它。这一步的松弛只涉及一个位置，256 步累积下来每一步都只承担一份局部误差。"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "step 数越多、每步揭的越少 → 乘积近似的误差越小，但总计算量越大。cosine 调度用 20 步，uncover1 用最多 256 步。",
+      "当 <code>|M| = 1</code> 时乘积分布和真实分布<strong>完全一样</strong>，因为只有一个位置，不存在「互相依赖」。所以一次揭一个的位置数是理论上最干净的极限。",
+      "这也解释了为什么论文默认的多步采样会把已经猜对的位置再遮回去——重遮是一种重新引入全局一致性的手段，代价是抹掉已经落子的事实。"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ls",
+   "title": "标签平滑把目标改成什么",
+   "lineno": "理论推导 · 三",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "设某个位置的 logits 是 <code>z ∈ R^V</code>，正确答案是 <code>y</code>。平滑交叉熵可以写成"
+    },
+    {
+     "type": "flowline",
+     "text": "L(z) = −(1−ε)·z_y − ε·(1/V)·Σ_v z_v ＋ log Σ_v exp(z_v)"
+    },
+    {
+     "type": "p",
+     "text": "对 <code>z</code> 求梯度："
+    },
+    {
+     "type": "code",
+     "text": "∂L/∂z = softmax(z) − [ (1−ε)·e_y + ε/V · 1 ]"
+    },
+    {
+     "type": "p",
+     "text": "所以如果 logits 可以任意取，最优解就是让模型分布等于<strong>平滑后的目标分布</strong>——正确答案占 <code>1−ε</code>，其余 <code>1024</code> 个词平分 <code>ε</code>。<code>ε=0.1</code> 时答案占 0.9，剩下每个约 0.0001。"
+    },
+    {
+     "type": "p",
+     "text": "关键在于 logits <strong>不能任意取</strong>。分类头的写法决定了 <code>z</code> 和隐向量 <code>h</code> 之间是什么关系，而不同的头给出完全不同的解空间。这就是下面两节要分开推的原因。"
+    }
+   ]
+  },
+  {
+   "id": "dottheory",
+   "title": "点积头：一个带约束的最优解",
+   "lineno": "理论推导 · 四",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "点积头的 logits 是 <code>z_v = h · w_v</code>，其中 <code>w_v</code> 是第 <code>v</code> 个词的嵌入向量，<code>h</code> 是解码器输出的隐向量。把 <code>z = W h</code> 代进上一节的损失，对 <code>h</code> 求梯度："
+    },
+    {
+     "type": "code",
+     "text": "∂L/∂h = W^T ( softmax(W h) − t )   其中 t = (1−ε)·e_y + ε/V · 1"
+    },
+    {
+     "type": "p",
+     "text": "令它等于零。记 <code>p = softmax(z)</code> 是模型给出的分布，<code>w̄ = (1/V) Σ_v w_v</code> 是全部词向量的平均，一阶条件整理成："
+    },
+    {
+     "type": "flowline",
+     "text": "Σ_v p_v · w_v  =  (1−ε)·w_y ＋ ε·w̄"
+    },
+    {
+     "type": "p",
+     "text": "这个式子的读法是：<strong>模型用自己的概率去加权平均词向量，得到的那个向量必须等于「正确答案向量与全体平均值的一个固定混合」</strong>。隐向量 <code>h</code> 本身被消掉了——它只充当一个中间量，真正被约束住的是输出分布的矩。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart LR\n    subgraph IN[\"输入\"]\n        N[\"n 与子集列表<br/>splits/n&lt;N&gt;.txt\"]\n        CK[\"checkpoint<br/>args.json 里还有是哪种头\"]\n    end\n    subgraph ENC[\"编码训练集\"]\n        T[\"train_tokens.npy<br/>(Nt, 256)\"]\n        TR[\"train_vqgan_recon/<br/>逐批写盘，不留在内存\"]\n    end\n    subgraph GEN[\"生成\"]\n        G[\"gen/*.png<br/>gen_tokens.npy\"]\n    end\n    subgraph MET[\"指标\"]\n        NN[\"双向 Hamming 最近邻\"]\n        COV[\"覆盖率 exact / approx\"]\n        ME[\"匹配误差：编号比例 + 像素 MSE\"]\n        GR[\"grid.png：gen / train / vqgan 三列\"]\n        OS[\"oneshot 对训练图猜对多少\"]\n        FID[\"FID：生成 vs 参照、重建 vs 参照\"]\n    end\n    OUT[\"outputs/&lt;exp&gt;/n&lt;N&gt;/metrics.json\"]\n\n    N --> ENC\n    CK --> GEN\n    T --> NN\n    G --> NN\n    NN --> COV\n    NN --> ME\n    TR --> ME\n    NN --> GR\n    TR --> GR\n    CK --> OS\n    GEN --> FID\n    COV --> OUT\n    ME --> OUT\n    GR --> OUT\n    OS --> OUT\n    FID --> OUT",
+     "caption": "图 4 · 评测流水线：一张 metrics.json 的来路",
+     "index": 4
+    },
+    {
+     "type": "h4",
+     "text": "正交的码本下，答案不会跑掉"
+    },
+    {
+     "type": "p",
+     "text": "如果 1024 个词向量两两正交（同时 <code>w̄</code> 落在它们的张成空间里），满足上面这个向量等式的分布是唯一的：把 <code>t</code> 按正交基分解，得到的系数就是 <code>p</code>。此时 <code>p</code> 正好等于平滑后的目标分布，最大概率落在 <code>y</code> 上，argmax 不会错。"
+    },
+    {
+     "type": "p",
+     "text": "但 VQGAN 的码本是<strong>学出来的</strong>，相邻的块本来就相似，词向量之间存在明显的相关性。这时上面那个向量等式有多组解：把一部分概率从 <code>w_y</code> 挪给另一个和它方向接近的 <code>w_{y'}</code>，加权和几乎不变，等式仍然近似成立，而 argmax 已经换人了。"
+    },
+    {
+     "type": "warnbox",
+     "html": "这就是「换相近的小块」的完整机制。它需要两个条件同时成立：<strong>标签平滑把一部分概率强制分出去</strong>（<code>ε &gt; 0</code>），以及<strong>词向量之间存在相关性</strong>（VQGAN 码本天然如此）。少任何一个，argmax 都会老老实实停在正确答案上。所以这个现象只在「点积头 + 标签平滑」这一格里容易出现。"
+    },
+    {
+     "type": "p",
+     "text": "把它和第 1 篇里那四种组合对照一下，预测就很清楚："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "点积 + 不平滑（<code>ε=0</code>）：目标是 <code>Σ p_v w_v = w_y</code>。正交时唯一解是 <code>e_y</code>；有相关时虽然也有多解，但没有「必须分出去」的那部分概率，argmax 更容易停在 <code>y</code> 上。",
+      "点积 + 平滑：两个条件都满足，最容易出现「换成相近的编号」。",
+      "独立头 + 不平滑：<code>U</code> 自由，可以把 <code>y</code> 的分数抬到任意高，精确记住编号。",
+      "独立头 + 平滑：<code>U</code> 仍然自由，虽然目标分布被摊开了，但把 <code>y</code> 的分数抬到最高这件事不受影响，argmax 依然可以是正确答案。"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lineartheory",
+   "title": "线性头为什么能逃出去",
+   "lineno": "理论推导 · 五",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "独立分类头的 logits 是 <code>z = U h</code>，<code>U</code> 是一个 <code>1024 × D</code> 的自由矩阵，每一行不受其他行约束，也不和词嵌入表共享。从优化的角度看，差别在于<strong>可行域</strong>："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "点积头：<code>z</code> 只能落在 <code>{W h : h ∈ R^D}</code> 这个 <code>D</code> 维子空间里。要实现的分布 <code>t</code> 未必在这个子空间里。",
+      "线性头：<code>z</code> 可以取 <code>R^1024</code> 里的任何值——取 <code>U = I</code>、<code>h = z</code> 即可，只要 <code>D ≥ 1024</code>；<code>D &lt; 1024</code> 时也能通过一个线性映射覆盖足够的方向。"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "可行域不受限的直接后果：上一节那个「矩必须等于某个固定混合」的等式消失了。线性头可以把正确答案的分数抬到任意高、把其余类的分数压到任意低，平滑项只会让整个分布被摊开一点，但摊开之后<strong>最大概率仍然在正确答案</strong>。"
+    },
+    {
+     "type": "h4",
+     "text": "这解释了四种组合里的两种极端"
+    },
+    {
+     "type": "p",
+     "text": "<code>ε = 0</code> 时线性头的目标就是一个 one-hot，它可以把 <code>y</code> 的 logit 做到远高于其他类，等价于把训练集的编号整张记住。<code>ε = 0.1</code> 时目标变成 <code>(0.9, 0.0001, 0.0001, …)</code>，要 argmax 正确只需要 <code>z_y &gt; z_v</code> 对所有 <code>v ≠ y</code> 成立，这件事和「概率被摊开」并不矛盾。"
+    },
+    {
+     "type": "note",
+     "html": "所以第 4.1 节那张表的两列不是「谁更好」，而是「谁的可行域更大」。可行域大意味着更可能精确记住训练样本，在 n 小的时候表现为编号全对，在 n 大的时候表现为覆盖不到新样本。两个方向都可以从同一个约束条件读出来。"
+    }
+   ]
+  },
+  {
+   "id": "schedule",
+   "title": "cosine 调度：每步揭多少",
+   "lineno": "理论推导 · 六",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "采样循环里，第 <code>t</code> 步之后还剩多少位置没揭开，由这个式子决定："
+    },
+    {
+     "type": "flowline",
+     "text": "mask_len(t) = floor( N · cos( π/2 · (t+1)/T ) )，N = 256，T = num_iter"
+    },
+    {
+     "type": "p",
+     "text": "它同时受两道夹取：上限是 <code>sum(unknown) − 1</code>（这一步至少得揭掉一个），下限是 <code>1</code>（至少给下一步留一个）。把 <code>N=256</code>、<code>T=20</code> 代进去，得到的数是"
+    },
+    {
+     "type": "code",
+     "text": "[255, 252, 248, 243, 236, 228, 218, 207, 194, 181,\n 166, 150, 133, 116,  97,  79,  59,  40,  20,   0]"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    TRUE[\"真实条件分布<br/>p(x_M | x_C)<br/>M 内部的位置互相依赖\"]\n    MF[\"采样器实际用的分布<br/>Π_i q_i(x_i | x_C)<br/>每个未知位置独立抽\"]\n    GAP[\"两者的差就是「产品分布」的松弛<br/>接缝两侧对不上，就来自这里\"]\n    WAY1[\"一步揭 k 个：一次从 Π q_i 抽 k 个<br/>抽完之前互不知道对方抽了什么\"]\n    WAY2[\"一次揭 1 个：抽完立刻变成可见<br/>下一步的条件已经包含它\"]\n    RES1[\"k 越大，松弛越大<br/>整片区域一次成型的难度越高\"]\n    RES2[\"256 步走完，每一步都只承担 1 个位置的松弛\"]\n\n    TRUE --> GAP\n    MF --> GAP\n    GAP --> WAY1 --> RES1\n    GAP --> WAY2 --> RES2",
+     "caption": "图 5 · 为什么一次揭多个会拼出接不上的图",
+     "index": 5
+    },
+    {
+     "type": "h4",
+     "text": "为什么是余弦"
+    },
+    {
+     "type": "p",
+     "text": "把 <code>cos(π/2·u)</code> 看成 <code>u ∈ [0,1]</code> 上的函数，它在这个区间上是凸的（二阶导为负），导数 <code>−π/2·sin(π/2·u)</code> 从 0 单调走到 <code>−π/2</code>。导数就是「每步揭掉的比例」："
+    },
+    {
+     "type": "flowline",
+     "text": "第 t 步新揭开的位置数 ≈ N · (π/2T) · sin( π/2·(t+1)/T )"
+    },
+    {
+     "type": "p",
+     "text": "正弦在 <code>[0, π/2]</code> 上单调递增，所以<strong>每一步揭开的数量是单调增加的</strong>。开头几乎不动，结尾一次揭掉一大片。实际算出来的每步新揭开数是"
+    },
+    {
+     "type": "code",
+     "text": "1, 3, 4, 5, 7, 8, 10, 11, 13, 13, 15, 16, 17, 17, 19, 18, 20, 19, 20, 20"
+    },
+    {
+     "type": "p",
+     "text": "整体趋势是递增的；floor 取整会带来个别位置上的抖动（第 16 步比第 15 步少一个），连续形式是严格单调的。"
+    },
+    {
+     "type": "p",
+     "text": "这个形状和「模型知识的积累方式」是相配的：开头几乎没有已知位置，模型的信息最少，一次揭太多位置的风险最大；越到后面已知位置越多，条件越来越充分，一次揭一批才安全。和平均场那一节的说法合起来看，<strong>每步揭的数量决定了这一步要承担多少「互相依赖被忽略」的误差</strong>，余弦调度把这份误差摊成了前小后大。"
+    }
+   ]
+  },
+  {
+   "id": "fidtheory",
+   "title": "FID 的分解与量化地板",
+   "lineno": "理论推导 · 七",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "FID 的定义是两个特征分布之间的距离。记拟合出来的高斯为 <code>N(μ, Σ)</code>，Fréchet 距离是"
+    },
+    {
+     "type": "flowline",
+     "text": "FID(p, q) = ‖μ_p − μ_q‖² ＋ tr( Σ_p ＋ Σ_q − 2·(Σ_p Σ_q)^{1/2} )"
+    },
+    {
+     "type": "p",
+     "text": "这个表达式不是随手拼的：它正好等于两个高斯分布之间的 <strong>2-Wasserstein 距离的平方</strong>。这一点有两个直接后果。"
+    },
+    {
+     "type": "h4",
+     "text": "后果一：sqrt(FID) 是真正的距离"
+    },
+    {
+     "type": "p",
+     "text": "<code>W₂²</code> 的平方根 <code>W₂</code> 是度量空间上的距离，满足三角不等式。于是"
+    },
+    {
+     "type": "flowline",
+     "text": "sqrt(FID(gen, ref)) ≤ sqrt(FID(gen, recon)) ＋ sqrt(FID(recon, ref))"
+    },
+    {
+     "type": "p",
+     "text": "换句话说，<strong>FID 本身不能相减</strong>：<code>FID(gen, ref) − FID(recon, ref)</code> 没有一个通用的分解含义。能写出来的只有上面那条开平方之后的三角不等式。"
+    },
+    {
+     "type": "note",
+     "html": "README 第 4.5 节写的是「(3) 减 (1) 才是分类头、标签平滑、遮挡方式和采样带来的误差」。严格按数学读，那句里的「减」应当理解成<strong>并排比较</strong>：把两档数字放在一起看，判断生成那一档比量化地板高多少。把 FID 相减当成误差分解会高估地板的贡献，因为三角不等式里的加法量级本来就不同。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart LR\n    subgraph DOT[\"点积头：z_i = h · w_i\"]\n        D1[\"可调的自由度只有 h\"]\n        D2[\"一阶条件：Σ_v p_v · w_v = (1-ε)·w_y + ε·w̄<br/>模型的期望词向量 = 平滑后的目标词向量\"]\n        D3[\"若 {w_v} 两两正交：唯一解就是平滑后的分布<br/>最大概率仍然落在正确答案\"]\n        D4[\"码本向量彼此相关时：<br/>把概率挪给邻近的 w_y' 也能满足同一个条件<br/>argmax 可能离开正确答案\"]\n        D1 --> D2 --> D3 --> D4\n    end\n    subgraph LIN[\"独立分类头：z = h U^T\"]\n        L1[\"U 自由，1024 行各自独立\"]\n        L2[\"可以精确实现任意目标分布<br/>包括把正确答案的分数抬到最高\"]\n        L3[\"ε = 0 时可以整张背下来\"]\n        L1 --> L2 --> L3\n    end",
+     "caption": "图 6 · 两种分类头在最优解处的差别",
+     "index": 6
+    },
+    {
+     "type": "h4",
+     "text": "后果二：地板是真的地板"
+    },
+    {
+     "type": "p",
+     "text": "解码是确定性的：给定编号，<code>get_codebook_entry</code> 加 <code>vqgan.decode</code> 得到唯一的图。所以如果生成出来的编号分布和参照集的编号分布完全一样，那么两边的图像分布也完全一样，此时"
+    },
+    {
+     "type": "flowline",
+     "text": "FID(生成 vs 参照) = FID(参照重建 vs 参照)"
+    },
+    {
+     "type": "p",
+     "text": "这个等号是严格的，不是近似。<code>metrics.json</code> 里那个 <code>'tokens_exact_equals_vqgan_recon': True</code> 说的就是它。也正是为什么两个 FID 必须并排写：重建那一档是量化本身能达到的最好结果，生成那一档只能站在它上面，两者之间的距离才是模型的事。"
+    },
+    {
+     "type": "p",
+     "text": "还有一件事要提醒：这个「地板」只在生成编号复现了参照编号时才严格成立。模型的编号分布和参照的编号分布不同时，两组图像的分布也会不同，两者之间的差既包含「编号没猜对」，也包含「解码之后放大或缩小了这种差别」。"
+    }
+   ]
+  },
+  {
+   "id": "covert",
+   "title": "覆盖率与匹配误差",
+   "lineno": "理论推导 · 八",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "这两个指标把「生成得像不像训练集」换成了一个可以有向度量的东西。先定义两张编号图之间的距离："
+    },
+    {
+     "type": "flowline",
+     "text": "d(x, y) = (1/256) · Σ_{i=1..256} 1[x_i ≠ y_i]       取值在 [0, 1]"
+    },
+    {
+     "type": "p",
+     "text": "就是逐位不等的比例，256 维上的归一化 Hamming 距离。两个指标都是它的极值："
+    },
+    {
+     "type": "ol",
+     "items": [
+      "<strong>覆盖率</strong>（训练集 → 生成集）：对每张训练图 <code>x</code>，求 <code>min_g d(x, g)</code>。等于 0 的比例叫完全覆盖，小于等于 <code>16/256 = 6.25%</code> 的比例叫大致覆盖。它回答「训练集里有多少张能在生成结果里被找到」。",
+      "<strong>匹配误差</strong>（生成集 → 训练集）：对每张生成图 <code>g</code>，求 <code>min_x d(g, x)</code>。对所有生成图取平均。它回答「生成出来的东西离训练集有多远」。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "为什么是两个方向"
+    },
+    {
+     "type": "p",
+     "text": "两个方向测的不是同一件事。覆盖率只看训练集那一侧，即使生成集里只有 1000 张图、张张都在复现训练样本，只要训练样本足够少，覆盖率也能很高。匹配误差只看生成集那一侧，即使生成集把 256 维空间里的一大片都铺开了，只要每张都离某个训练图不太远，这个数也不大。"
+    },
+    {
+     "type": "p",
+     "text": "放在一起读才有意义："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "覆盖率接近 1 + 匹配误差很小 → 模型在复现训练集，小 n 上这是可以做到的，因为 <code>1024^256</code> 的搜索空间里要精准命中几个点并不难。",
+      "覆盖率低 + 匹配误差大 → 生成结果既不落在训练集附近，也没覆盖住，这通常出现在 n 大、训练轮数不够的时候。",
+      "覆盖率低 + 匹配误差小 → 生成的图都在训练图的邻域里，但没有一张精确命中。这是大 n 上比较理想的状态。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "大 n 上完全覆盖为什么必然接近 0"
+    },
+    {
+     "type": "p",
+     "text": "完全覆盖要求生成集里存在一张图，256 个编号全部和某张训练图相同。生成张数是 <code>|G|</code>，而编号空间的规模是 <code>1024^256</code>；即使模型把分布学得很准，单张图被精确复现的概率仍然极低。所以 README 第 2.2 节才会说「大 n 完全覆盖可以接近 0，大致覆盖和匹配误差仍要报」——前者失去分辨力，后者还有。"
+    },
+    {
+     "type": "h4",
+     "text": "复杂度"
+    },
+    {
+     "type": "p",
+     "text": "直接算需要 <code>|T| × |G| × 256</code> 次比较。<code>n=1000</code> 时要拿 50000 张生成图对 1000 张训练图，是 1.28 × 10¹⁰ 次整数比较；<code>n=10000</code> 时放大十倍。代码里用两层分块（<code>q_batch=32</code>、<code>g_batch=4096</code>）把中间张量的体积压住，这只是内存上的处理，算术总量没有减少。"
+    }
+   ]
+  },
+  {
+   "id": "inference",
+   "title": "推理：从全遮到一张图",
+   "lineno": "eval_exp.py 285–359",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "推理和训练最大的不同有两条：编码器不再丢位置，损失也不存在了。"
+    },
+    {
+     "type": "figure",
+     "mmd": "xychart-beta\n    title \"T = 20、N = 256 时，每一步之后还剩多少位置没揭开\"\n    x-axis [\"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\", \"14\", \"15\", \"16\", \"17\", \"18\", \"19\", \"20\"]\n    y-axis \"mask_len\" 0 --> 256\n    line [255, 252, 248, 243, 236, 228, 218, 207, 194, 181, 166, 150, 133, 116, 97, 79, 59, 40, 20, 0]",
+     "caption": "图 7 · mask_len = floor(256 · cos(π/2 · (step+1)/num_iter))",
+     "index": 7
+    },
+    {
+     "type": "code",
+     "text": "token_all_mask = token_indices == mask_token_id\ntoken_drop_mask = torch.zeros_like(token_indices)"
+    },
+    {
+     "type": "p",
+     "text": "这两行是推理路径的起点。生成时没有任何位置被丢掉，<code>token_drop_mask</code> 是全零张量，所以编码器看到的是类槽加全部 256 个位置。被遮的位置仍然以 <code>mask_token_label</code> 的身份留在序列里。"
+    },
+    {
+     "type": "p",
+     "text": "循环体里每步要做的事，第 2 篇已经逐行拆过，这里只把两套循环的形状放在一起看："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>cosine</code>：每步把所有未知位置一起预测，再按置信度遮回一批。遮回的数量由余弦调度决定。已经猜对的位置可能被重新遮住。",
+      "<code>uncover1</code>：每步只把最有把握的那一个位置定下来，落子即固定。最多 256 步，未知清空就提前退出。"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "两者的每个位置仍然各自算概率，差别只在<strong>揭开的次序</strong>。结合平均场那一节：cosine 每步要一次定下一批位置，这批位置之间没有互相依赖；uncover1 每步只承担一个位置的松弛。"
+    },
+    {
+     "type": "warnbox",
+     "html": "README 第 4.3 节专门写了一句：论文默认的 12 步生成会把已经猜对的位置再遮回去，那不是半 A 半 B 实验。原因是重遮会让「接缝周围的替换发生在哪一步」变得不可观察——一批位置被遮掉再重新预测，你看不出新的取值是因为条件变了还是因为噪声换了。"
+    }
+   ]
+  },
+  {
+   "id": "evalflow",
+   "title": "评测流水线",
+   "lineno": "eval_exp.py 全文",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "把第 2 篇流水线图重新放一遍，因为这一篇要谈结果，得先知道每个数字是谁算的。"
+    },
+    {
+     "type": "figure",
+     "mmd": "flowchart TD\n    G[\"生成图的特征分布\"]\n    R[\"参照集的特征分布<br/>(参照集 VQGAN 重建后的分布记为 R')\"]\n    W[\"FID 就是两个高斯之间的 2-Wasserstein 距离的平方<br/>所以 sqrt(FID) 是真正的距离，满足三角不等式\"]\n    TRI[\"sqrt(FID(gen, ref)) ≤ sqrt(FID(gen, recon)) + sqrt(FID(recon, ref))\"]\n    FLOOR[\"下界：若生成编号的分布 = 参照编号的分布<br/>解码是确定性的，两张图逐像素相同<br/>此时 FID(gen, ref) = FID(recon, ref)\"]\n    READ[\"所以两个 FID 要并排写：<br/>重建那一档是量化本身的地板，生成那一档站在它上面\"]\n\n    G --> W\n    R --> W\n    W --> TRI\n    W --> FLOOR\n    TRI --> READ\n    FLOOR --> READ",
+     "caption": "图 8 · 两个 FID 的关系：地板与三角不等式",
+     "index": 8
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<code>train_tokens.npy</code>：训练集的编号，逐批编码得到，存在盘上。n=10000 时是 <code>10000 × 256</code> 的整数数组，十几兆。",
+      "<code>train_vqgan_recon/</code>：训练图的 VQGAN 重建，一张一张写盘。它是像素口径匹配误差的基准，也是拼图第三列。",
+      "<code>gen/*.png</code> 与 <code>gen_tokens.npy</code>：生成结果的两份表示。图用来算 FID，编号用来算覆盖率与匹配误差。",
+      "<code>grid.png</code>：三列拼图，用最近邻下标配对。",
+      "<code>metrics.json</code>：以上全部汇总，写之前先过一遍字段校验。"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "有一条容易忽略的设计：评测既可以自己生成，也可以指向现成的生成目录（<code>--gen_dir</code>）。后者会先试着读同目录的 <code>gen_tokens.npy</code>，读不到才把图片重新编码一遍。这样同一次生成可以拿去做多种比较，不必重跑采样。"
+    }
+   ]
+  },
+  {
+   "id": "downstream",
+   "title": "下游两条路",
+   "lineno": "models_vit_mage.py / main_linprobe.py",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "生成这条线之外，MAGE 还把同一套预训练权重拿去做分类。做法是复用词嵌入和位置嵌入，把编码器换成 timm 的 ViT，再加一个分类头。"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "<strong>微调</strong>：<code>main_finetune.py</code> 全参数更新，带逐层学习率衰减（<code>--layer_decay</code>）和 mixup / cutmix。论文在 ImageNet-1K 上 ViT-B 报 82.5%。",
+      "<strong>线性探测</strong>：<code>main_linprobe.py</code> 冻结主干，只训一个线性头，头前面加一层 <code>BatchNorm1d</code>。优化器用 LARS。论文报 ViT-B 74.7%。"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "两条路共用的部分是池化方式：默认 <code>--global_pool</code> 会丢掉类槽、对 256 个位置取平均再过 <code>fc_norm</code>；加上 <code>--cls_token</code> 就改成取第 0 个位置。这个选择在生成任务里没有对应物，是纯分类的接口。"
+    },
+    {
+     "type": "note",
+     "html": "这一篇不展开下游，因为系列第 4、5 篇会专门讲两个引擎和三个入口脚本。放在这里只是为了让「结构」这一部分完整：预训练的产物是一个能补编号的模型，而分类能力是从同一套表示里读出来的副作用。"
+    }
+   ]
+  },
+  {
+   "id": "papernum",
+   "title": "论文的数字",
+   "lineno": "README.official.md",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "先把参照系摆出来。论文在 ImageNet-1K 上、256×256 分辨率、类无条件生成的成绩是："
+    },
+    {
+     "type": "ul",
+     "items": [
+      "ViT-Base：FID <strong>11.1</strong>，IS 81.2",
+      "ViT-Large：FID <strong>9.10</strong>，IS 105.1",
+      "线性探测 Top-1：ViT-B 74.7%，ViT-L 78.9%",
+      "微调 Top-1：ViT-B 82.5%，ViT-L 83.9%"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "这四个数字里，前两个是生成，后两个是表示学习。论文的卖点是这两件事在同一个模型里同时做到——下图就是那张主张的证据：横轴是生成 FID（越靠右越小越好），纵轴是线性探测准确率，MAGE 落在右上角，是唯一一个两侧都不落后的点。"
+    },
+    {
+     "type": "plate",
+     "src": "plates/result.png",
+     "caption": "图 9 · 论文在 ImageNet-1K 上的对照：横轴类无条件生成 FID（反向），纵轴线性探测准确率",
+     "credit": "来源：仓库 figures/result.png，论文原图"
+    },
+    {
+     "type": "p",
+     "text": "下面这张是论文给出的类无条件生成样例，用来看「图像质量」这个指标在论文语境里是什么意思。"
+    },
+    {
+     "type": "plate",
+     "src": "plates/uncond-gen.jpg",
+     "caption": "图 10 · 论文的类无条件生成样例（ImageNet-256）",
+     "credit": "来源：仓库 figures/uncond-gen.png，论文原图"
+    }
+   ]
+  },
+  {
+   "id": "scope",
+   "title": "本实验的口径",
+   "lineno": "README 第 2.1 / 4.5 节",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "本仓库跑的实验和上面那组数字<strong>不是同一个实验</strong>，这件事在 README 里被反复强调，理由有三个。"
+    },
+    {
+     "type": "ol",
+     "items": [
+      "<strong>数据不同。</strong>本实验用 Tiny-ImageNet，原图 64×64，训练和评测前 <code>Resize(256, BICUBIC) + CenterCrop(256)</code> 放大到 256。放大这一步本身会引入模糊和块状伪影，FID 分布和原生 256×256 的图完全不同。",
+      "<strong>训练集规模不同。</strong>论文用完整 ImageNet-1K（128 万张），本实验按 n = 1, 2, 10, 100, 1000, 10000 逐档跑。",
+      "<strong>FID 实现不同。</strong>本实验用 <code>pytorch-fid</code> 的 <code>calculate_fid_given_paths</code>（TF Inception 2015-12-05，2048 维），和 LGANs-TT 的 <code>realdata.py</code> 一致；论文的官方评测命令用的是 <code>torch-fidelity</code>。两边主干网络同为 Inception，但预处理和版本差异会带来小数级别的偏移。"
+     ]
+    },
+    {
+     "type": "warnbox",
+     "html": "合并起来读：<code>metrics.json</code> 里 <code>source.fid_comparable_to_paper</code> 这个字段永远是 <code>false</code>，Tiny 上的 FID <strong>不能</strong>和 11.1 比。它只能在本实验内部横向比：同一个 n 下的不同设置之间、同一个设置下的不同 n 之间。"
+    },
+    {
+     "type": "h4",
+     "text": "能比的是这三组"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "同一个 n 下，四种组合（点积／独立头 × 平滑／不平滑）之间。",
+      "同一种组合下，n = 1 → 2 → 10 → 100 → 1000 → 10000 的走势，以及它离该数据上的 VQGAN 重建 FID 还有多远。",
+      "<code>0.5-1</code> 与 <code>0-1</code> 两种遮挡分布在同一个 n 上的差别。"
+     ]
+    },
+    {
+     "type": "p",
+     "text": "顺带说一下 <code>n=10000</code> 那一档：它要生成 50000 张图，和论文的生成张数一致，是唯一一档在「图数」上对齐的配置。要对齐的只有图数，数据本身仍然不同。"
+    }
+   ]
+  },
+  {
+   "id": "status",
+   "title": "本实验的清单与状态",
+   "lineno": "README 第 5 节",
+   "blocks": [
+    {
+     "type": "p",
+     "text": "结果数字不在这个仓库里——训练和评测都在集群上跑（<code>bsub</code> 提交，只用 V100），结果写在集群的 <code>outputs/&lt;实验名&gt;/n&lt;N&gt;/</code> 下。仓库里的 <code>README.md</code> 第 5 节维护的是一张完成清单。"
+    },
+    {
+     "type": "h4",
+     "text": "阶段 0 · 评测和数据"
+    },
+    {
+     "type": "p",
+     "text": "打勾的项：每个 n 用哪些图已经写死（<code>splits/n&lt;N&gt;.txt</code> 加 <code>manifest.json</code>），评测脚本统一为 <code>eval_exp.py</code>，VQGAN 重建 FID 和生成 FID 走同一个 <code>fid_two_folders()</code>，采样参数写进 <code>metrics.json</code>。"
+    },
+    {
+     "type": "h4",
+     "text": "阶段 1 · 四种组合"
+    },
+    {
+     "type": "ul",
+     "items": [
+      "n = 1、2、10、100：四格全跑完。",
+      "n = 1000：只跑 <code>lin_nosmooth</code>（按第 4.1 节的例外条款），已完成。",
+      "n = 10000：只跑 <code>lin_nosmooth</code>，<strong>待训评结束</strong>。",
+      "缺少的那一栏「一次全揭猜对多少编号、猜错编号离正确答案有多近、第 2.2 节全部指标和拼图」：n = 1000 已完成，n = 10000 待训评结束。",
+      "<code>*50000</code>：本段没跑，清单里注明不用小 n 冒充。"
+     ]
+    },
+    {
+     "type": "h4",
+     "text": "阶段 2 到 6"
+    },
+    {
+     "type": "p",
+     "text": "半 A 半 B（阶段 2）、训练测试遮挡对齐（阶段 3）、按 n 核对指标（阶段 4）、大 n 泛化（阶段 5）、量化误差与论文可比性（阶段 6）都还没勾选。其中阶段 6 里的 ImageNet-256 部分注明「没做就写明」，因为要复现 11.1 那个比较需要完整的 ImageNet-256 验证集，仓库里 <code>prepare_imgnet_val.py</code> 准备好了脚本，数据本身没准备。"
+    },
+    {
+     "type": "note",
+     "html": "以上状态抄自仓库里的 <code>README.md</code>，是那份文件的勾选情况，不是我从结果文件核出来的——结果文件不在本仓库。"
+    }
+   ]
+  },
+  {
+   "id": "keypoints",
+   "title": "要点汇总",
+   "lineno": null,
+   "blocks": [
+    {
+     "type": "ol",
+     "items": [
+      "整个项目只做一件事：把图像换成 256 个编号，然后在这个离散空间里做掩码预测。像素只在 VQGAN 里出现一次，而且 VQGAN 全程冻结。",
+      "词表 2025 = 1024 编号 + 1000 类别 + 1 mask。类槽用写死的编号 1100，遮盖用写死的编号 2024，两者都落在真实编号区间之外，不会碰撞。",
+      "训练时编码器固定丢掉 <code>mask_ratio_min</code> 比例的位置，解码器拿回全部 257 个槽；两个掩码是包含关系。推理时一个位置都不丢。",
+      "训练目标是逐位置的条件似然，在数学上是联合似然的一个上界——它不要求刻画被遮位置之间的依赖。采样器实际用的是这份目标的平均场松弛，一次揭多个位置之所以会拼出接不上的图，根源就在这里。",
+      "点积头的最优解满足 <code>Σ p_v w_v = (1−ε)w_y + ε w̄</code>。标签平滑强制分出一部分概率，码本向量之间又存在相关性，两个条件合起来才让 argmax 可能离开正确答案。独立头因为可行域不受限，两个条件都不受约束。",
+      "余弦调度让每步揭开的位置数单调递增，把平均场误差摊成前小后大。",
+      "FID 是 2-Wasserstein 距离的平方，所以能写三角不等式的是 sqrt(FID)；FID 本身不能相减。量化地板在「生成编号复现参照编号」时是严格等式。",
+      "覆盖率和匹配误差是同一套 Hamming 距离的两个方向，一个看训练集被找到多少，一个看生成集离训练集多远。大 n 上完全覆盖必然接近 0，这个数在大 n 上失去分辨力。",
+      "论文的 11.1（ViT-B）是 ImageNet-256 上的数字。本实验是 Tiny-ImageNet 放大到 256，<code>fid_comparable_to_paper</code> 永远是 false，只能在本实验内部横比。",
+      "本实验的结果文件在集群上，不在仓库里。仓库维护的是清单和口径，这两样东西本身就是结果该怎么读的前提。"
+     ]
+    }
+   ]
+  }
+ ],
+ "footer": "MAGE 源码逐读 · 全解篇 | 结构 · 数据流 · 推导 · 结果"
+}

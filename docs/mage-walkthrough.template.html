@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAGE 主模型逐行讲解 · models_mage.py</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --ink: #1f2329;
+    --muted: #646a73;
+    --line: #e4e6eb;
+    --accent: #2f6fed;
+    --code-bg: #f2f3f5;
+    --code-ink: #1f2329;
+    --warn-bg: #fff7e6;
+    --warn-line: #ffd591;
+    --ok-bg: #f0f9eb;
+    --ok-line: #b7eb8f;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+    line-height: 1.75;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 22px 90px; }
+  header.hero {
+    background: linear-gradient(135deg, #1f3b73 0%, #2f6fed 100%);
+    color: #fff;
+    border-radius: 16px;
+    padding: 34px 34px 30px;
+    margin-bottom: 30px;
+  }
+  header.hero h1 { margin: 0 0 10px; font-size: 27px; letter-spacing: .2px; }
+  header.hero p { margin: 4px 0; color: #dbe6ff; font-size: 14px; }
+  header.hero .meta { margin-top: 14px; font-size: 13px; color: #c3d4ff; }
+  .toc {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 24px;
+    margin-bottom: 30px;
+  }
+  .toc h2 { font-size: 15px; margin: 0 0 10px; color: var(--muted); letter-spacing: .5px; }
+  .toc ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 34px; }
+  .toc li { margin: 3px 0; break-inside: avoid; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 26px 30px 28px;
+    margin-bottom: 22px;
+  }
+  h2.sec {
+    font-size: 20px;
+    margin: 0 0 6px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--accent);
+    display: inline-block;
+  }
+  h3 { font-size: 17px; margin: 30px 0 10px; }
+  h4 { font-size: 15px; margin: 22px 0 8px; color: #2b3038; }
+  h2 .ln, h3 .ln, h4 .ln {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--accent);
+    background: #eef3ff; border-radius: 6px; padding: 2px 8px;
+    margin-left: 8px; vertical-align: middle; font-weight: 600;
+  }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 5px 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+    background: var(--code-bg);
+    color: #c7254e;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  pre {
+    background: #0f1117;
+    color: #e6e8ec;
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: 13px; }
+  .note, .tip, .warnbox {
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .note { background: #eef3ff; border-left: 4px solid var(--accent); }
+  .tip { background: var(--ok-bg); border-left: 4px solid var(--ok-line); }
+  .warnbox { background: var(--warn-bg); border-left: 4px solid var(--warn-line); }
+  figure { margin: 18px 0; text-align: center; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .mermaid { background: #fff; text-align: center; margin: 6px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
+  th { background: #f2f4f8; }
+  .flowline {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #f6f8fb; border: 1px dashed #c9d4ea; border-radius: 10px;
+    padding: 12px 16px; font-size: 13px; color: #33415c; overflow-x: auto; white-space: nowrap;
+  }
+  footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 30px; }
+  @media (max-width: 640px) {
+    .toc ol { columns: 1; }
+    section { padding: 20px 18px; }
+    .wrap { padding: 18px 12px 60px; }
+    header.hero { padding: 26px 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>MAGE 主模型逐行讲解</h1>
+  <p>代码文件：<strong>models_mage.py</strong>（MAGE 预训练与生成的核心模型）</p>
+  <p>配套内容：逐行注释讲解 + 9 张架构图</p>
+  <div class="meta">仓库：LTH14/mage · 实验分支：001eander/MAGE_new &nbsp;|&nbsp; 生成日期：2026-09-29</div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#overview">模型概览：它在做什么</a></li>
+    <li><a href="#imports">依赖与导入（1–13 行）</a></li>
+    <li><a href="#attention">Attention（16–44 行）</a></li>
+    <li><a href="#block">Block（47–69 行）</a></li>
+    <li><a href="#lsce">LabelSmoothingCrossEntropy（72–87 行）</a></li>
+    <li><a href="#bert">BertEmbeddings（90–124 行）</a></li>
+    <li><a href="#mlm">MlmLayer：点积分类头（127–143 行）</a></li>
+    <li><a href="#init">MaskedGenerativeEncoderViT.__init__（146–233 行）</a></li>
+    <li><a href="#iw">initialize_weights / _init_weights（235–264 行）</a></li>
+    <li><a href="#fenc">forward_encoder（266–333 行）</a></li>
+    <li><a href="#fdec">forward_decoder（335–367 行）</a></li>
+    <li><a href="#floss">forward_loss（369–375 行）</a></li>
+    <li><a href="#ffwd">forward（377–381 行）</a></li>
+    <li><a href="#factory">两个工厂函数（384–397 行）</a></li>
+    <li><a href="#keypoints">这一篇的要点</a></li>
+    <li><a href="#diagrams">架构图（mermaid）</a></li>
+  </ol>
+</nav>
+
+<section id="overview">
+  <h2 class="sec">模型概览：它在做什么</h2>
+  <p>整张图先被冻结的 VQGAN 编码成 16×16=256 个编号，编号取值范围 <code>0..1023</code>。模型在这 256 个编号上做类似 BERT 的掩码预测：盖住一部分位置，让编码器只看剩下的一半，再让解码器把被盖住的位置猜回原来的编号。像素层面它一行都不碰，全部在编号空间里做。</p>
+  <div class="flowline">图像 →（VQGAN）→ 256 编号 → 随机遮盖 → 编码器 → 解码器 → 每个位置的 1024 类 logits → 交叉熵</div>
+</section>
+
+<section id="imports">
+  <h2 class="sec">依赖与导入<span class="ln">1–13 行</span></h2>
+<pre><code>from timm.models.vision_transformer import PatchEmbed, DropPath, Mlp
+from util.pos_embed import get_2d_sincos_pos_embed
+from taming.models.vqgan import VQModel
+from omegaconf import OmegaConf
+import numpy as np
+import scipy.stats as stats</code></pre>
+  <ul>
+    <li>第 6 行从 timm 借了三个现成件：<code>PatchEmbed</code>（16×16 卷积切块）、<code>DropPath</code>（随机深度）、<code>Mlp</code>（Transformer 里的前馈层）。</li>
+    <li>第 8 行是正弦余弦位置编码，<code>util/pos_embed.py</code> 里生成。</li>
+    <li>第 10–11 行引入本地 VQGAN，配置用 OmegaConf 从 <code>config/vqgan.yaml</code> 读。</li>
+    <li>第 13 行 <code>scipy.stats</code> 用来抽截断正态的遮挡比例，这是 MAGE 相对 MAE 的关键变动之一。</li>
+  </ul>
+</section>
+
+<section id="attention">
+  <h2 class="sec">Attention<span class="ln">16–44 行</span></h2>
+<pre><code>def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    self.num_heads = num_heads
+    head_dim = dim // num_heads
+    self.scale = qk_scale or head_dim ** -0.5
+    self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+    self.attn_drop = nn.Dropout(attn_drop)
+    self.proj = nn.Linear(dim, dim)
+    self.proj_drop = nn.Dropout(proj_drop)</code></pre>
+  <ul>
+    <li>第 20 行每个头分到 <code>dim/num_heads</code> 维。</li>
+    <li>第 22 行缩放系数默认 <code>1/sqrt(head_dim)</code>，是标准注意力。</li>
+    <li>第 24 行用一个线性层一次性算出 Q、K、V，输出维度是 <code>3*dim</code>。</li>
+    <li>第 26 行输出投影，把多头结果拼回 <code>dim</code>。</li>
+  </ul>
+<pre><code>def forward(self, x):
+    B, N, C = x.shape
+    qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv[0], qkv[1], qkv[2]
+
+    with torch.cuda.amp.autocast(enabled=False):
+        attn = (q.float() @ k.float().transpose(-2, -1)) * self.scale
+
+    attn = attn - torch.max(attn, dim=-1, keepdim=True)[0]
+    attn = attn.softmax(dim=-1)
+    attn = self.attn_drop(attn)
+
+    x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+    x = self.proj(x)
+    x = self.proj_drop(x)
+    return x, attn</code></pre>
+  <ul>
+    <li>第 31 行把 <code>(B,N,3C)</code> 拆成 <code>(3,B,heads,N,head_dim)</code>，<code>permute(2,0,3,1,4)</code> 就是把 3 提到最前，方便按行取 q/k/v。</li>
+    <li>第 34–35 行是这段代码的特别之处：注意力分数<strong>强制用 float32 算</strong>，屏蔽掉 AMP 的半精度。这样做的原因是长序列加半精度时 <code>q·k</code> 容易溢出。</li>
+    <li>第 37 行先减去每行的最大值再 softmax。PyTorch 的 softmax 内部本来就减最大值，这里预减一次是为了让第 38 行的输入幅度更可控，配合半精度更安全。</li>
+    <li>第 41 行把各头拼回去，<code>transpose(1,2)</code> 把 heads 维和 N 维换回来，再 reshape 成 <code>(B,N,C)</code>。</li>
+    <li>返回的不只是结果，还有注意力矩阵 <code>attn</code>（第 44 行）。<code>Block</code> 里默认丢掉它，只有要可视化注意力时才取。</li>
+  </ul>
+</section>
+
+<section id="block">
+  <h2 class="sec">Block<span class="ln">47–69 行</span></h2>
+<pre><code>def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None,
+             drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+    self.norm1 = norm_layer(dim)
+    self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                          attn_drop=attn_drop, proj_drop=drop)
+    self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+    self.norm2 = norm_layer(dim)
+    mlp_hidden_dim = int(dim * mlp_ratio)
+    self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)</code></pre>
+  <p>标准 pre-norm Transformer 块。<code>norm1</code> 在注意力前，<code>norm2</code> 在前馈前。<code>drop_path</code> 为 0 时退化成恒等映射（第 56 行）。</p>
+<pre><code>def forward(self, x, return_attention=False):
+    if return_attention:
+        _, attn = self.attn(self.norm1(x))
+        return attn
+    else:
+        y, _ = self.attn(self.norm1(x))
+        x = x + self.drop_path(y)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+    return x</code></pre>
+  <ul>
+    <li>第 62–64 行的分支只给可视化用：只跑注意力并把矩阵返回，不改 <code>x</code>。</li>
+    <li>第 66–68 行是残差结构：注意力输出加回 <code>x</code>，再过 MLP 加回 <code>x</code>。<code>norm2</code> 加在 MLP 前，而非残差相加之后。</li>
+  </ul>
+</section>
+
+<section id="lsce">
+  <h2 class="sec">LabelSmoothingCrossEntropy<span class="ln">72–87 行</span></h2>
+<pre><code>def forward(self, x, target):
+    logprobs = torch.nn.functional.log_softmax(x, dim=-1)
+    nll_loss = -logprobs.gather(dim=-1, index=target.unsqueeze(1))
+    nll_loss = nll_loss.squeeze(1)
+    smooth_loss = -logprobs.mean(dim=-1)
+    loss = self.confidence * nll_loss + self.smoothing * smooth_loss
+    return loss</code></pre>
+  <ul>
+    <li>第 82 行取 log 概率。</li>
+    <li>第 83–84 行取出正确答案那一列，取负号就是普通交叉熵。<code>gather</code> 配合 <code>target.unsqueeze(1)</code> 是为了按索引取值。</li>
+    <li>第 85 行 <code>smooth_loss</code> 是所有类别的平均负 log 概率，代表「均匀猜」的损失。</li>
+    <li>第 86 行按 <code>1-smoothing</code> 和 <code>smoothing</code> 加权混合。默认 <code>smoothing=0.1</code>，也就是把正确答案只看成 90% 置信。这就是 README 里反复提到的标签平滑，改 <code>--label_smoothing 0</code> 就退回精确交叉熵。</li>
+  </ul>
+</section>
+
+<section id="bert">
+  <h2 class="sec">BertEmbeddings<span class="ln">90–124 行</span></h2>
+  <p>这是 MAGE 把图像编号当「词」喂给 Transformer 的入口。</p>
+<pre><code>def __init__(self, vocab_size, hidden_size, max_position_embeddings, dropout=0.1):
+    self.word_embeddings = nn.Embedding(vocab_size, hidden_size)
+    self.position_embeddings = nn.Embedding(max_position_embeddings, hidden_size)
+    self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-6)
+    self.dropout = nn.Dropout(dropout)
+    self.register_buffer("position_ids", torch.arange(max_position_embeddings).expand((1, -1)))
+    torch.nn.init.normal_(self.word_embeddings.weight, std=.02)
+    torch.nn.init.normal_(self.position_embeddings.weight, std=.02)</code></pre>
+  <ul>
+    <li>第 95 行词嵌入表，行数就是词表大小（本文件里是 2025），列数是隐层维度。</li>
+    <li>第 96 行位置嵌入表，可学习，最多 257 个位置（256 个图块 + 1 个类槽）。</li>
+    <li>第 100 行 LayerNorm。第 103 行把位置 id 注册成 buffer，不受梯度影响、跟随模型到处走。</li>
+    <li>第 105–106 行把两张表都按 <code>std=0.02</code> 初始化。</li>
+  </ul>
+<pre><code>def forward(self, input_ids):
+    input_shape = input_ids.size()
+    seq_length = input_shape[1]
+    position_ids = self.position_ids[:, :seq_length]
+    inputs_embeds = self.word_embeddings(input_ids)
+    position_embeddings = self.position_embeddings(position_ids)
+    embeddings = inputs_embeds + position_embeddings
+    embeddings = self.LayerNorm(embeddings)
+    embeddings = self.dropout(embeddings)
+    return embeddings</code></pre>
+  <ul>
+    <li>第 115 行按当前序列长度截取位置 id。</li>
+    <li>第 117–120 行查表相加，词嵌入叠位置嵌入。</li>
+    <li>第 122–123 行归一化加 dropout。这里的位置信息是<strong>学出来的</strong>，和后面那个正弦余弦 <code>pos_embed</code> 是两码事，后者其实没被用到。</li>
+  </ul>
+</section>
+
+<section id="mlm">
+  <h2 class="sec">MlmLayer：点积分类头<span class="ln">127–143 行</span></h2>
+<pre><code>def __init__(self, feat_emb_dim, word_emb_dim, vocab_size):
+    self.fc = nn.Linear(feat_emb_dim, word_emb_dim)
+    self.gelu = nn.GELU()
+    self.ln = nn.LayerNorm(word_emb_dim)
+    self.bias = nn.Parameter(torch.zeros(1, 1, vocab_size))
+
+def forward(self, x, word_embeddings):
+    mlm_hidden = self.fc(x)
+    mlm_hidden = self.gelu(mlm_hidden)
+    mlm_hidden = self.ln(mlm_hidden)
+    word_embeddings = word_embeddings.transpose(0, 1)
+    logits = torch.matmul(mlm_hidden, word_embeddings)
+    logits = logits + self.bias
+    return logits</code></pre>
+  <p>这是 README 表格里那一列「点积」的官方实现。</p>
+  <ul>
+    <li>第 137–139 行把解码器输出投影到词向量维度，过 GELU 再 LayerNorm。</li>
+    <li>第 140 行把词表转成 <code>(word_emb_dim, vocab_size)</code>，这里的 <code>word_embeddings</code> 是从外面传进来的、并且已经 <code>detach</code>（见第 363 行）。</li>
+    <li>第 141 行用<strong>点积</strong>得到每个词的分数。隐向量和词表向量做内积，谁方向最接近谁的分数就最高。</li>
+    <li>第 134/142 行是一个偏置项，初始化为 0，形状是每个词一个标量。</li>
+  </ul>
+  <div class="note">分类权重就是词嵌入表本身。隐向量被迫落在词向量张成的空间里，这正是 README 4.1 节说的「隐向量被限制在词向量空间」，也是「换相近小块」现象的机制来源。</div>
+</section>
+
+<section id="init">
+  <h2 class="sec">MaskedGenerativeEncoderViT.__init__<span class="ln">146–233 行</span></h2>
+  <p>构造函数比较长，拆开看。</p>
+
+  <h4>VQGAN 部分<span class="ln">158–170 行</span></h4>
+<pre><code>config = OmegaConf.load('config/vqgan.yaml').model
+self.vqgan = VQModel(ddconfig=config.params.ddconfig,
+                     n_embed=config.params.n_embed,
+                     embed_dim=config.params.embed_dim,
+                     ckpt_path=vqgan_ckpt_path)
+for param in self.vqgan.parameters():
+    param.requires_grad = False
+
+self.codebook_size = config.params.n_embed
+vocab_size = self.codebook_size + 1000 + 1
+self.fake_class_label = self.codebook_size + 1100 - 1024
+self.mask_token_label = vocab_size - 1</code></pre>
+  <ul>
+    <li>第 160–164 行读配置并实例化 VQGAN，权重从 <code>vqgan_ckpt_path</code> 加载。</li>
+    <li>第 165–166 行把 VQGAN 全部参数冻结。它只在训练里当编码器用，不参与更新。</li>
+    <li>第 168 行 <code>codebook_size</code> 就是词表大小 1024，也就是一张图的编号取值范围。</li>
+    <li>第 169 行 <code>vocab_size = 1024 + 1000 + 1 = 2025</code>。多出来的 1000 是给分类任务用的类别编号，最后 1 个是 mask 专用的编号。这说明 MAGE 是「生成 + 分类」的混合模型。</li>
+    <li>第 170 行 <code>fake_class_label = 1024 + 1100 - 1024 = 1100</code>。它是放在序列第 0 位的一个占位编号，用来当 BERT 里的 <code>[CLS]</code>。它的 id 落在类别编号区间里，和真实的 0..1023 编号不会撞车，它对应的那一行嵌入是可学习的。</li>
+    <li>第 171 行 <code>mask_token_label = 2024</code>，遮盖位置用它替换。</li>
+  </ul>
+
+  <h4>位置嵌入与遮挡分布<span class="ln">172–181 行</span></h4>
+<pre><code>self.token_emb = BertEmbeddings(vocab_size=vocab_size, hidden_size=embed_dim,
+                                max_position_embeddings=256+1, dropout=0.1)
+
+self.mask_ratio_min = mask_ratio_min
+self.mask_ratio_generator = stats.truncnorm((mask_ratio_min - mask_ratio_mu) / mask_ratio_std,
+                                            (mask_ratio_max - mask_ratio_mu) / mask_ratio_std,
+                                            loc=mask_ratio_mu, scale=mask_ratio_std)</code></pre>
+  <ul>
+    <li>第 172–175 行就是上面那个 BERT 嵌入，词表 2025，隐层 <code>embed_dim</code>，位置数 257。</li>
+    <li>第 179–181 行构造一个<strong>截断正态分布</strong>，取值被限制在 <code>[mask_ratio_min, mask_ratio_max]</code>。scipy 的 <code>truncnorm</code> 要求先把上下界标准化成 <code>(a,b)</code>，所以前面减均值除标准差。默认均值 0.55、标准差 0.25、下界 0.5、上界 1.0。每次前向会从这个分布抽一个标量当这次的遮挡比例。这是 MAGE 和 MAE（固定 75%）最大的不同，也是 README 4.4 节「0.5-1 对 0-1」要改的地方。</li>
+  </ul>
+
+  <h4>编码器<span class="ln">184–196 行</span></h4>
+<pre><code>dropout_rate = 0.1
+self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
+num_patches = self.patch_embed.num_patches
+self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)
+self.blocks = nn.ModuleList([
+    Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, qk_scale=None, norm_layer=norm_layer,
+          drop=dropout_rate, attn_drop=dropout_rate)
+    for i in range(depth)])
+self.norm = norm_layer(embed_dim)</code></pre>
+  <div class="warnbox">这里要敲黑板：<code>patch_embed</code>、<code>pos_embed</code>、和后面的 <code>decoder_pos_embed</code> <strong>在真正的前向里几乎都不用</strong>。实际 token 序列来自 VQGAN 编号经 <code>token_emb</code> 得到的嵌入，位置信息也来自 <code>token_emb</code> 里可学习的位置表。它们是从 MAE 骨架继承下来的遗留结构，<code>num_patches</code> 只是拿来算 <code>pos_embed</code> 的形状用。读代码时不要被它们带偏。</div>
+  <ul>
+    <li>第 192–195 行按 <code>depth</code> 堆编码器块，<code>drop</code> 和 <code>attn_drop</code> 都设成 0.1，<code>qkv_bias=True</code>。</li>
+    <li>第 196 行最后一层 LayerNorm。</li>
+  </ul>
+
+  <h4>解码器<span class="ln">200–215 行</span></h4>
+<pre><code>self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
+self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
+self.pad_with_cls_token = True
+self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)
+self.decoder_pos_embed_learned = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim))
+self.decoder_blocks = nn.ModuleList([... for i in range(decoder_depth)])
+self.decoder_norm = norm_layer(decoder_embed_dim)
+self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True)</code></pre>
+  <ul>
+    <li>第 201 行把编码器输出维度映射到解码器维度。</li>
+    <li>第 203 行 <code>mask_token</code> 又是一个遗留参数，因为第 204 行 <code>pad_with_cls_token = True</code>，实际用的是类槽的表示来填充遮住的位置，这个 <code>mask_token</code> 不会被调用。</li>
+    <li>第 206–207 行两套位置嵌入，固定的那套没用，实际用第 207 行可学习的 <code>decoder_pos_embed_learned</code>。</li>
+    <li>第 215 行 <code>decoder_pred</code> 是把解码器输出变回像素块形状的分支，用来做 MAE 那种像素重建。MAGE 走的是编号分类，这条分支同样不参与前向，属于遗留。</li>
+  </ul>
+
+  <h4>分类头与损失<span class="ln">218–233 行</span></h4>
+<pre><code>self.linear_head = bool(linear_head)
+if self.linear_head:
+    self.mlm_layer = None
+    self.token_classifier = nn.Linear(decoder_embed_dim, self.codebook_size)
+else:
+    self.mlm_layer = MlmLayer(feat_emb_dim=decoder_embed_dim, word_emb_dim=embed_dim, vocab_size=vocab_size)
+    self.token_classifier = None
+
+self.norm_pix_loss = norm_pix_loss
+self.criterion = LabelSmoothingCrossEntropy(smoothing=label_smoothing)
+self.initialize_weights()</code></pre>
+  <ul>
+    <li>第 220–227 行是二选一。<code>linear_head=True</code> 时建一个自由的一层线性层直接映射到 1024 类；否则用上面的 <code>MlmLayer</code> 点积头。这对应 README 4.1 节表格里的两行，命令行开关就是 <code>--linear_head</code>。</li>
+    <li>第 231 行把平滑系数固定进损失函数，<code>--label_smoothing 0.1/0</code> 就在这里生效。</li>
+  </ul>
+</section>
+
+<section id="iw">
+  <h2 class="sec">initialize_weights 与 _init_weights<span class="ln">235–264 行</span></h2>
+<pre><code>pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.patch_embed.num_patches**.5), cls_token=True)
+self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+decoder_pos_embed = get_2d_sincos_pos_embed(...)
+self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
+
+w = self.patch_embed.proj.weight.data
+torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+
+torch.nn.init.normal_(self.cls_token, std=.02)
+torch.nn.init.normal_(self.mask_token, std=.02)
+torch.nn.init.normal_(self.decoder_pos_embed_learned, std=.02)
+
+self.apply(self._init_weights)</code></pre>
+  <ul>
+    <li>第 238–242 行填充两套固定正弦余弦位置嵌入。虽然前向没用到，还是要填，因为它们是参数、会被算进模型和保存进检查点。</li>
+    <li>第 245–246 行把 <code>patch_embed</code> 的卷积权重按线性层方式做 xavier 初始化。</li>
+    <li>第 248–251 行初始化几个零参数：<code>cls_token</code>、<code>mask_token</code>、可学习解码器位置嵌入，都用 <code>std=0.02</code>。</li>
+    <li>第 254 行 <code>self.apply</code> 遍历所有子模块，调用 <code>_init_weights</code>。</li>
+  </ul>
+<pre><code>def _init_weights(self, m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.LayerNorm):
+        nn.init.constant_(m.bias, 0)
+        nn.init.constant_(m.weight, 1.0)</code></pre>
+  <ul>
+    <li>线性层用 xavier，偏置清零。</li>
+    <li>LayerNorm 的缩放设 1、偏移设 0。</li>
+    <li>这个函数只管 <code>Linear</code> 和 <code>LayerNorm</code>，<code>nn.Embedding</code>（词嵌入、位置嵌入）和 <code>MlmLayer.bias</code> 不在其中，它们保留各自在构造函数里的初始化。</li>
+  </ul>
+</section>
+
+<section id="fenc">
+  <h2 class="sec">forward_encoder<span class="ln">266–333 行</span></h2>
+  <p>这是全文件最需要慢慢读的地方。</p>
+
+  <h4>输入分两种<span class="ln">267–281 行</span></h4>
+<pre><code>if x.dtype in (torch.int32, torch.int64):
+    token_indices = x.long()
+    if token_indices.dim() == 1:
+        token_indices = token_indices.unsqueeze(0)
+    token_indices = token_indices[:, :256].contiguous()
+    gt_indices = token_indices.clone()
+    device = token_indices.device
+else:
+    with torch.no_grad():
+        z_q, _, token_tuple = self.vqgan.encode(x)
+    _, _, token_indices = token_tuple
+    token_indices = token_indices.reshape(z_q.size(0), -1)
+    gt_indices = token_indices.clone().detach().long()
+    device = x.device</code></pre>
+  <ul>
+    <li>第 268 行判断输入是不是整数。是整数就表示这批数据已经是<strong>缓存好的编号</strong>，直接拿来用，省掉每步的 VQGAN 编码。对应 <code>main_pretrain.py</code> 里的 <code>--cache_tokens</code>。</li>
+    <li>第 272 行只取前 256 个位置。</li>
+    <li>第 273 行把编号复制一份当监督目标 <code>gt_indices</code>。</li>
+    <li>第 275–281 行是图像分支：VQGAN 前向拿 <code>token_tuple</code>，取第三个元素作为编号，reshape 成 <code>(bsz, 256)</code>，克隆并长期保存为标签。整个过程 <code>no_grad</code>，VQGAN 不产生梯度。</li>
+  </ul>
+
+  <h4>抽遮挡比例并造掩码<span class="ln">283–305 行</span></h4>
+<pre><code>bsz, seq_len = token_indices.size()
+mask_ratio_min = self.mask_ratio_min
+mask_rate = self.mask_ratio_generator.rvs(1)[0]
+
+num_dropped_tokens = int(np.ceil(seq_len * mask_ratio_min))
+num_masked_tokens = int(np.ceil(seq_len * mask_rate))
+
+while True:
+    noise = torch.rand(bsz, seq_len, device=device)
+    sorted_noise, _ = torch.sort(noise, dim=1)
+    cutoff_drop = sorted_noise[:, num_dropped_tokens-1:num_dropped_tokens]
+    cutoff_mask = sorted_noise[:, num_masked_tokens-1:num_masked_tokens]
+    token_drop_mask = (noise &lt;= cutoff_drop).float()
+    token_all_mask = (noise &lt;= cutoff_mask).float()
+    if token_drop_mask.sum() == bsz*num_dropped_tokens and token_all_mask.sum() == bsz*num_masked_tokens:
+        break
+    else:
+        print("Rerandom the noise!")
+
+token_indices[token_all_mask.nonzero(as_tuple=True)] = self.mask_token_label</code></pre>
+  <ul>
+    <li>第 286 行从截断正态抽<strong>一个</strong>比例，这一批数据共用同一个 <code>mask_rate</code>。</li>
+    <li>第 288 行 <code>num_dropped_tokens</code> 用 <code>mask_ratio_min</code> 算，默认 <code>ceil(256*0.5)=128</code>。这是编码器固定要丢掉的数量。</li>
+    <li>第 289 行 <code>num_masked_tokens</code> 用抽到的比例算，标记为「用 mask 编号替换」的数量。</li>
+    <li>第 291–302 行用「随机数排序后取第 k 个」的办法精确定选出恰好 k 个位置。<code>cutoff_drop</code> 是第 128 小值，<code>noise &lt;= cutoff</code> 刚好选中 128 个。</li>
+    <li><code>while True</code> 循环处理并列的问题：如果噪声里有相等的值，选中个数可能对不上，就重新抽。正常情况下几乎不会触发。</li>
+    <li>第 297 行 <code>token_drop_mask</code> 标记要<strong>从编码器输入里删掉</strong>的 128 个位置。</li>
+    <li>第 298 行 <code>token_all_mask</code> 标记要<strong>替换成 mask 编号</strong>的位置，数量至少 128，是它的超集。</li>
+    <li>第 304 行把 <code>token_all_mask</code> 为 1 的位置的编号改成 2024。此时改的是输入，<code>gt_indices</code> 还留着原始编号当答案。</li>
+  </ul>
+
+  <h4>拼类槽、嵌入、丢弃<span class="ln">307–333 行</span></h4>
+<pre><code>token_indices = torch.cat([torch.zeros(token_indices.size(0), 1, device=device), token_indices], dim=1)
+token_indices[:, 0] = self.fake_class_label
+token_drop_mask = torch.cat([torch.zeros(bsz, 1, device), token_drop_mask], dim=1)
+token_all_mask = torch.cat([torch.zeros(bsz, 1, device), token_all_mask], dim=1)
+token_indices = token_indices.long()
+input_embeddings = self.token_emb(token_indices)
+bsz, seq_len, emb_dim = input_embeddings.shape
+
+token_keep_mask = 1 - token_drop_mask
+input_embeddings_after_drop = input_embeddings[token_keep_mask.nonzero(as_tuple=True)].reshape(bsz, -1, emb_dim)
+
+x = input_embeddings_after_drop
+for blk in self.blocks:
+    x = blk(x)
+x = self.norm(x)
+
+return x, gt_indices, token_drop_mask, token_all_mask</code></pre>
+  <ul>
+    <li>第 308–310 行在序列最前面插一个位置，编号设成 <code>fake_class_label</code>（1100），当类槽。</li>
+    <li>第 311–314 行给两个掩码也在前面补 0，长度对齐到 257。类槽永远不遮、永远不丢。</li>
+    <li>第 317 行走 BERT 嵌入，得到 <code>(bsz, 257, embed_dim)</code>。</li>
+    <li>第 322–323 行按 <code>token_keep_mask</code> 选出没被丢的嵌入，然后 reshape 回 <code>(bsz, 257-128, emb_dim)</code>，也就是 <code>(bsz, 129, ...)</code>。</li>
+    <li>第 327–330 行过 12 层编码器再归一化。</li>
+    <li>第 333 行返回四样：编码器输出、原始编号标签、丢弃掩码、全部掩码。</li>
+  </ul>
+  <div class="note">编码器看到的东西：类槽 + 128 个没被丢的 token。这 128 个里面，一部分是真实编号，一部分已经是 mask 编号（因为遮盖集合比丢弃集合大）。README 里「编码器固定丢掉 50% 的位置」说的就是这 128。</div>
+</section>
+
+<section id="fdec">
+  <h2 class="sec">forward_decoder<span class="ln">335–367 行</span></h2>
+<pre><code>x = self.decoder_embed(x)
+
+if self.pad_with_cls_token:
+    mask_tokens = x[:, 0:1].repeat(1, token_all_mask.shape[1], 1)
+else:
+    mask_tokens = self.mask_token.repeat(token_all_mask.shape[0], token_all_mask.shape[1], 1)
+
+x_after_pad = mask_tokens.clone()
+x_after_pad[(1 - token_drop_mask).nonzero(as_tuple=True)] = x.reshape(x.shape[0] * x.shape[1], x.shape[2])
+x_after_pad = torch.where(token_all_mask.unsqueeze(-1).bool(), mask_tokens, x_after_pad)
+
+x = x_after_pad + self.decoder_pos_embed_learned
+
+for blk in self.decoder_blocks:
+    x = blk(x)
+
+x = self.decoder_norm(x)
+
+if self.linear_head:
+    return self.token_classifier(x)
+
+word_embeddings = self.token_emb.word_embeddings.weight.data.detach()
+x = self.mlm_layer(x, word_embeddings)
+return x</code></pre>
+  <ul>
+    <li>第 337 行先把 129 个编码器输出映射到解码器维度。</li>
+    <li>第 340–341 行取类槽的表示 <code>x[:,0:1]</code>，重复 257 份当作「填充向量」。所有被遮住的位置都用它填。</li>
+    <li>第 346 行先把整个序列填成类槽表示。</li>
+    <li>第 347 行把编码器留下来的那 129 个输出放回它们原来的位置（<code>1 - token_drop_mask</code> 就是保留位置）。</li>
+    <li>第 349 行是关键第二步：凡是 <code>token_all_mask</code> 为 1 的位置，重新盖回填充向量。这处理的是「没被编码器丢掉、但属于遮盖集合」的那些位置。</li>
+    <li>第 352 行加上可学习的解码器位置嵌入，注意是 learned 那套。</li>
+    <li>第 355–358 行过 8 层解码器再归一化。</li>
+    <li>第 360–361 行是独立分类头分支，直接线性映射到 1024 类。</li>
+    <li>第 363 行是点积头分支：取出词嵌入表的权重并 <code>detach()</code>，让梯度不从这里回流。</li>
+  </ul>
+</section>
+
+<section id="floss">
+  <h2 class="sec">forward_loss<span class="ln">369–375 行</span></h2>
+<pre><code>bsz, seq_len = gt_indices.size()
+loss = self.criterion(logits[:, 1:, :self.codebook_size].reshape(bsz*seq_len, -1), gt_indices.reshape(bsz*seq_len))
+loss = loss.reshape(bsz, seq_len)
+loss = (loss * mask[:, 1:]).sum() / mask[:, 1:].sum()
+return loss</code></pre>
+  <ul>
+    <li>第 372 行有三个切片动作要看清。<code>logits[:, 1:, ...]</code> 丢掉类槽位置；<code>[..., :self.codebook_size]</code> 只取前 1024 类，把类别编号和 mask 编号的 logits 扔掉，因为这里只做编号预测。然后 reshape 成 <code>(bsz*256, 1024)</code> 与标签对齐。</li>
+    <li>第 373 行把每个位置的损失还原成 <code>(bsz, 256)</code>。</li>
+    <li>第 374 行只对遮蔽位置求平均。<code>mask[:, 1:]</code> 对应去掉类槽后的 256 个位置。没被遮的位置不贡献损失。</li>
+  </ul>
+</section>
+
+<section id="ffwd">
+  <h2 class="sec">forward<span class="ln">377–381 行</span></h2>
+<pre><code>def forward(self, imgs):
+    latent, gt_indices, token_drop_mask, token_all_mask = self.forward_encoder(imgs)
+    logits = self.forward_decoder(latent, token_drop_mask, token_all_mask)
+    loss = self.forward_loss(gt_indices, logits, token_all_mask)
+    return loss, imgs, token_all_mask</code></pre>
+  <p>把三步串起来，返回损失、原始输入、以及遮盖掩码。<code>engine_pretrain.py</code> 里只取第一个 <code>loss</code>，后两个留给需要可视化的调用方。</p>
+</section>
+
+<section id="factory">
+  <h2 class="sec">两个工厂函数<span class="ln">384–397 行</span></h2>
+<pre><code>def mage_vit_base_patch16(**kwargs):
+    model = MaskedGenerativeEncoderViT(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        decoder_embed_dim=768, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model</code></pre>
+  <ul>
+    <li>Base 版：编码器 12 层、12 头、隐层 768；解码器 8 层、16 头、768 维。</li>
+    <li>Large 版（392–397 行）：编码器 24 层、16 头、1024 维；解码器 8 层、16 头、1024 维。</li>
+    <li><code>main_pretrain.py</code> 第 235 行用 <code>models_mage.__dict__[args.model](...)</code> 按名字取函数，默认就是 <code>mage_vit_large_patch16</code>。</li>
+  </ul>
+</section>
+
+<section id="keypoints">
+  <h2 class="sec">这一篇的要点</h2>
+  <ol>
+    <li>模型全程在编号空间工作，VQGAN 冻结，像素从来不进 Transformer。</li>
+    <li>词表 2025 = 1024 编号 + 1000 类别 + 1 mask，说明它同时兼容生成和分类。</li>
+    <li>遮挡比例每步从截断正态抽一个，<code>mask_ratio_min</code> 决定编码器固定丢多少（默认 128/256）。</li>
+    <li>分类头有两条路：点积（<code>MlmLayer</code>，权重就是词表）和独立线性层，对应 README 4.1 的两种组合。</li>
+    <li><code>patch_embed</code>、<code>pos_embed</code>、<code>decoder_pos_embed</code>、<code>mask_token</code>、<code>decoder_pred</code> 是从 MAE 继承的遗留结构，前向里不走。</li>
+  </ol>
+</section>
+
+<section id="diagrams">
+  <h2 class="sec">架构图（mermaid）</h2>
+
+  <h3>1. 整体数据流（预训练）</h3>
+  <figure><div class="mermaid">
+flowchart TD
+    IMG["图像 batch&lt;br/&gt;(B, 3, 256, 256)"]
+    CACHE["缓存编号&lt;br/&gt;(int32/int64, B, 256)"]
+    IMG -->|"dtype 浮点"| VQ["冻结 VQGAN.encode"]
+    VQ --> ZQ["z_q"]
+    VQ --> TOKS["token_indices (B, 256)"]
+    CACHE -->|"dtype 整数"| TOKS
+    TOKS --> SAMPLE["从截断正态抽 mask_rate&lt;br/&gt;1 个标量, 范围 [0.5, 1.0]"]
+    SAMPLE --> MK["构造两种掩码"]
+    MK --> DROP["token_drop_mask&lt;br/&gt;固定 ceil(256*0.5)=128 个要丢"]
+    MK --> ALL["token_all_mask&lt;br/&gt;ceil(256*mask_rate) &gt;= 128 个要遮"]
+    ALL --> REPL["遮盖位置编号改写成 mask_token_label = 2024"]
+    REPL --> CLSADD["最前面插类槽&lt;br/&gt;编号 = fake_class_label = 1100&lt;br/&gt;序列变 (B, 257)"]
+    CLSADD --> EMB["BertEmbeddings&lt;br/&gt;词嵌入 + 位置嵌入 + LayerNorm + Dropout"]
+    EMB --> TRIM["按 keep = 1 - drop 选出保留位置&lt;br/&gt;(B, 129, D)"]
+    TRIM --> ENC["Encoder: 12(24) × Block"]
+    ENC --> ENCLN["LayerNorm"]
+    ENCLN --> DEC["forward_decoder"]
+    DEC --> LOGITS["logits (B, 257, 2025)"]
+    TOKS --> GT["gt_indices (B, 256) 原始答案"]
+    GT --> LOSS
+    LOGITS --> LOSS["forward_loss&lt;br/&gt;只对遮盖位置求平均"]
+  </div><figcaption>图 1 · 预训练整体数据流</figcaption></figure>
+
+  <h3>2. forward_encoder 内部</h3>
+  <figure><div class="mermaid">
+flowchart TD
+    START["token_indices (B, 256)"] --> RATE["mask_rate ~ truncnorm&lt;br/&gt;mu=0.55, std=0.25, 截断到 [min, max]"]
+    START --> CNT["num_dropped = ceil(256 * mask_ratio_min)&lt;br/&gt;num_masked  = ceil(256 * mask_rate)"]
+    RATE --> CNT
+    CNT --> NOISE["noise = rand(B, 256)&lt;br/&gt;排序取第 k 小值做阈值"]
+    NOISE --> CHK{"选中的个数&lt;br/&gt;精确等于 k？"}
+    CHK -->|"否, 有并列"| NOISE
+    CHK -->|"是"| MASKS["token_drop_mask = noise &lt;= 第128小值&lt;br/&gt;token_all_mask  = noise &lt;= 第 num_masked 小值"]
+    MASKS --> SET["token_indices[token_all_mask] = 2024"]
+    SET --> CAT["torch.cat 前置类槽, 长度 257"]
+    CAT --> SETCLS["token_indices[:, 0] = 1100"]
+    SETCLS --> BERT["token_emb: word + position + LN + dropout&lt;br/&gt;(B, 257, D)"]
+    BERT --> KEEP["token_keep_mask = 1 - token_drop_mask"]
+    KEEP --> GATHER["按保留位置 gather 再 reshape&lt;br/&gt;(B, 129, D)"]
+    GATHER --> BLOCKS["for blk in self.blocks: x = blk(x)"]
+    BLOCKS --> NORM["self.norm"]
+    NORM --> OUT["返回 x, gt_indices,&lt;br/&gt;token_drop_mask, token_all_mask"]
+  </div><figcaption>图 2 · forward_encoder 内部流程</figcaption></figure>
+
+  <h3>3. forward_decoder 内部</h3>
+  <figure><div class="mermaid">
+flowchart TD
+    X["编码器输出 x (B, 129, D)"] --> P1["decoder_embed&lt;br/&gt;D → decoder_embed_dim"]
+    P1 --> P2["mask_tokens = x[:,0:1].repeat(1, 257, 1)&lt;br/&gt;用类槽表示当填充向量&lt;br/&gt;(pad_with_cls_token=True)"]
+    P2 --> PAD["x_after_pad 全部初始化为 mask_tokens"]
+    PAD --> FILL["把 129 个编码器输出放回原位置&lt;br/&gt;索引 = (1 - token_drop_mask)"]
+    FILL --> FORCE["凡是 token_all_mask 为 1 的位置&lt;br/&gt;重新盖回 mask_tokens"]
+    FORCE --> POS["加 decoder_pos_embed_learned"]
+    POS --> DBLK["Decoder: 8 × Block"]
+    DBLK --> DN["decoder_norm"]
+    DN --> BRANCH{"分类头类型"}
+    BRANCH -->|"linear_head"| LIN["token_classifier&lt;br/&gt;Linear(decoder_dim, 1024)"]
+    BRANCH -->|"默认"| MLM["MlmLayer&lt;br/&gt;fc → gelu → LN,&lt;br/&gt;再与 detach 的词嵌入做点积 + bias"]
+    LIN --> OUT["logits (B, 257, 2025 或 1024)"]
+    MLM --> OUT
+  </div><figcaption>图 3 · forward_decoder 内部流程</figcaption></figure>
+
+  <h3>4. forward_loss（只监督遮盖位置）</h3>
+  <figure><div class="mermaid">
+flowchart LR
+    L["logits (B, 257, 2025)"] --> SL1["去掉类槽: logits[:, 1:, :]"]
+    SL1 --> SL2["只取前 1024 类"]
+    SL2 --> RS["reshape (B*256, 1024)"]
+    G["gt_indices (B, 256)"] --> RS2["reshape (B*256)"]
+    RS --> CE["LabelSmoothingCrossEntropy"]
+    RS2 --> CE
+    CE --> CE2["reshape 回 (B, 256)"]
+    M["token_all_mask[:, 1:]"] --> WM["加权平均&lt;br/&gt;sum(loss*mask)/sum(mask)"]
+    CE2 --> WM
+    WM --> FIN["标量 loss"]
+  </div><figcaption>图 4 · 损失只作用在被遮盖的位置</figcaption></figure>
+
+  <h3>5. 两种分类头的对比</h3>
+  <figure><div class="mermaid">
+flowchart TB
+    subgraph DOT["点积头 (官方默认)"]
+        D1["解码器隐向量 h"] --> D2["fc: decoder_dim → embed_dim"]
+        D2 --> D3["GELU → LayerNorm"]
+        D3 --> D4["logits = h @ W_word^T + bias"]
+        WE["词嵌入表 W_word&lt;br/&gt;detach, 不更新"] --> D4
+        D4 --> D5["隐向量被限制在词向量张成的空间"]
+    end
+    subgraph LIN["独立分类头 (--linear_head)"]
+        L1["解码器隐向量 h"] --> L2["Linear(decoder_dim, 1024)"]
+        L2 --> L3["自由权重, 可精确拟合任意 one-hot"]
+    end
+  </div><figcaption>图 5 · 点积头与独立分类头</figcaption></figure>
+
+  <h3>6. models_mage.py 的类结构</h3>
+  <figure><div class="mermaid">
+classDiagram
+    class MaskedGenerativeEncoderViT {
+        +VQModel vqgan
+        +BertEmbeddings token_emb
+        +ModuleList blocks
+        +ModuleList decoder_blocks
+        +MlmLayer mlm_layer
+        +Linear token_classifier
+        +LabelSmoothingCrossEntropy criterion
+        +truncnorm mask_ratio_generator
+        +forward_encoder(x)
+        +forward_decoder(x, drop_mask, all_mask)
+        +forward_loss(gt, logits, mask)
+        +forward(imgs)
+    }
+    class Attention {
+        +Linear qkv
+        +Linear proj
+        +forward(x)
+    }
+    class Block {
+        +LayerNorm norm1
+        +Attention attn
+        +Mlp mlp
+        +LayerNorm norm2
+    }
+    class BertEmbeddings {
+        +Embedding word_embeddings
+        +Embedding position_embeddings
+        +LayerNorm LayerNorm
+    }
+    class MlmLayer {
+        +Linear fc
+        +Parameter bias
+        +forward(x, word_embeddings)
+    }
+    class LabelSmoothingCrossEntropy {
+        +smoothing
+        +confidence
+    }
+    class VQModel {
+        frozen
+        +encode(x)
+    }
+    MaskedGenerativeEncoderViT *-- "12 / 24" Block
+    MaskedGenerativeEncoderViT *-- "8" Block : decoder_blocks
+    MaskedGenerativeEncoderViT *-- BertEmbeddings
+    MaskedGenerativeEncoderViT *-- LabelSmoothingCrossEntropy
+    MaskedGenerativeEncoderViT *-- MlmLayer
+    MaskedGenerativeEncoderViT o-- VQModel
+    Block *-- Attention
+    BertEmbeddings ..> MlmLayer : word_embeddings 复用
+  </div><figcaption>图 6 · 类结构与组合关系</figcaption></figure>
+
+  <h3>7. 下游分类路径</h3>
+  <figure><div class="mermaid">
+flowchart TD
+    IMG["图像 (B, 3, 256, 256)"] --> VQE["VQGAN.encode (冻结)"]
+    VQE --> TI["token_indices (B, 256)"]
+    TI --> CLS["前置类槽 = fake_class_label"]
+    CLS --> TE["BertEmbeddings (同一套词/位置嵌入)"]
+    TE --> BLK["ViT blocks (timm VisionTransformer)"]
+    BLK --> POOL{"pool 方式"}
+    POOL -->|"global_pool=True 默认"| GP["去掉类槽, 对 256 个位置取均值&lt;br/&gt;再过 fc_norm"]
+    POOL -->|"cls_token (--cls_token)"| CT["取第 0 个位置&lt;br/&gt;再过 self.norm"]
+    GP --> HEAD["head: Linear(embed_dim, nb_classes)"]
+    CT --> HEAD
+    HEAD --> FT["main_finetune: 全参数微调&lt;br/&gt;layer-wise lr decay"]
+    HEAD --> LP["main_linprobe: 冻结主干&lt;br/&gt;head 前加 BatchNorm1d&lt;br/&gt;只用 LARS 训 head"]
+  </div><figcaption>图 7 · 微调与线性探测的下游路径</figcaption></figure>
+
+  <h3>8. 一个预训练 step 的时序</h3>
+  <figure><div class="mermaid">
+sequenceDiagram
+    participant DL as DataLoader
+    participant M as MaskedGenerativeEncoderViT
+    participant S as LossScaler
+    participant O as Optimizer
+    Note over DL,O: 每个 data_iter_step
+    DL->>M: samples (图像或缓存编号)
+    M->>M: forward_encoder: VQGAN 编码 + 抽遮挡 + 掩码 + 嵌入 + 12 层 Block
+    M->>M: forward_decoder: 回填 + 8 层 Block + 分类头
+    M->>M: forward_loss: 只在遮盖位置算平滑交叉熵
+    M-->>S: loss
+    S->>O: 反传 + 梯度裁剪 (clip_grad=3.0) + 更新
+    Note over O: loss_scaler 内部做 AMP
+    O->>O: 每 accum_iter 步清空梯度
+  </div><figcaption>图 8 · 预训练单步时序</figcaption></figure>
+
+  <h3>9. 三个入口脚本的分工</h3>
+  <figure><div class="mermaid">
+flowchart LR
+    subgraph PRE["main_pretrain.py + engine_pretrain.py"]
+        P1["VQGAN 冻结, 编号空间掩码预训练"]
+        P2["输出 checkpoint-last.pth / checkpoint-&lt;epoch&gt;.pth"]
+    end
+    subgraph FIN["main_finetune.py + engine_finetune.py"]
+        F1["载入预训练权重, 全参数微调"]
+        F2["报 acc1 / acc5"]
+    end
+    subgraph LIN["main_linprobe.py + engine_finetune.py"]
+        L1["载入预训练权重, 只训线性 head"]
+        L2["报 acc1 / acc5"]
+    end
+    P2 --> F1
+    P2 --> L1
+  </div><figcaption>图 9 · 三个入口脚本的分工</figcaption></figure>
+
+  <div class="tip">图中所有方框均由浏览器内的 mermaid 实时渲染。若在邮件客户端里看不到图，请把 HTML 下载后用浏览器打开。</div>
+</section>
+
+<footer>
+  MAGE 主模型讲解 · models_mage.py &nbsp;|&nbsp; 仓库 LTH14/mage &nbsp;|&nbsp; 2026-09-29
+</footer>
+
+</div>
+
+<!--MERMAID_LIB-->
+
+<script>
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis' } });
+  }
+</script>
+</body>
+</html>
